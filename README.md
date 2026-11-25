@@ -87,3 +87,15 @@ lời vẫn không vừa. Có thể tắt giữ mốc để xuất lời đọc 
 - Kết nối OmniVoice VPS qua multipart, nghe thử trực tiếp và xuất WAV/MP3.
 - Tốc độ, khoảng nghỉ, chuẩn âm lượng, cắt lặng, phong cách và lời dặn riêng.
 - Giới hạn đồng thời, timeout, thử lại và dùng lại câu hoàn thành.
+
+## Bản ZIP và cập nhật
+
+Tải `Tool_Long_Tieng.zip` từ GitHub Releases, giải nén rồi mở
+`CHAY TOOL.bat` trên Windows có Python 3.11+. Nút **Cập nhật** tải Release mới,
+kiểm tra SHA-256, lưu bản sao mã cũ trong `data/updates/` rồi mở lại bằng BAT.
+App giữ dữ liệu cá nhân, model và môi trường Python. Bản clone dùng Ctrl+T.
+
+Để phát hành, tăng `VERSION` trong `version.py` rồi đưa lên `main`.
+Workflow tạo Release từ đúng commit đó. Khi phát hành thủ công,
+`python build_release.py` tạo ZIP và checksum trong `dist/`. Đính kèm
+cả hai vào Release có tag trùng phiên bản, ví dụ `v0.5.0`.

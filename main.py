@@ -7,6 +7,8 @@ from pathlib import Path
 from PySide6 import QtCore as C, QtGui as G, QtWidgets as W
 
 import local_tts
+import updater
+from version import VERSION
 from library_ui import LibraryDialog
 from storage import DATA, LEGACY, OUTPUT, ROOT, sample_path
 from voice_library import Reference, save_reference
@@ -94,6 +96,7 @@ class Signals(C.QObject):
     log = C.Signal(str)
     success = C.Signal(object)
     failure = C.Signal(str)
+    update_result = C.Signal(str, object)
 
 
 class App(W.QWidget):
@@ -105,17 +108,26 @@ class App(W.QWidget):
         self.stop = None
         self.installing = False
         self.output = None
+        self.updating = False
         self.settings = self.load_settings()
         self.signals = Signals(self)
         self.signals.progress.connect(self.progress_update)
         self.signals.log.connect(self.set_status)
         self.signals.success.connect(self.finished)
         self.signals.failure.connect(self.failed)
+        self.signals.update_result.connect(self.update_finished)
 
         page = W.QVBoxLayout(self)
         page.setContentsMargins(24, 18, 24, 18)
         page.setSpacing(12)
-        self.label(page, "Lồng tiếng", "title")
+        header = W.QHBoxLayout()
+        page.addLayout(header)
+        self.label(header, "Lồng tiếng", "title")
+        header.addStretch()
+        self.label(header, f"v{VERSION}", muted=True)
+        self.update_button = self.button("Cập nhật", self.check_update)
+        header.addWidget(self.update_button)
+        self.update_button.setVisible(sys.platform == "win32" and not (ROOT / ".git").exists())
         grid = W.QHBoxLayout()
         grid.setSpacing(12)
         page.addLayout(grid, 1)
@@ -223,6 +235,12 @@ class App(W.QWidget):
         self.engines.setCurrentRow(list(ENGINES).index(saved) if saved in ENGINES else 0)
         self.set_busy(False)
         self.set_status("Chọn máy đọc và nhập văn bản.")
+        draft = DATA / "updates" / "draft.txt"
+        try:
+            self.text.setPlainText(draft.read_text(encoding="utf-8"))
+            draft.unlink()
+        except OSError:
+            pass
 
     @staticmethod
     def load_settings():
@@ -415,8 +433,56 @@ class App(W.QWidget):
 
         threading.Thread(target=work, daemon=True).start()
 
+    def check_update(self):
+        self.update_task("check", updater.latest)
+
+    def update_task(self, action, task):
+        self.updating = True
+        self.set_busy(True)
+        self.cancel.setEnabled(False)
+        self.progress.setRange(0, 0)
+        self.set_status("Đang kiểm tra bản mới…" if action == "check" else "Đang tải và kiểm tra bản cập nhật…")
+
+        def work():
+            try:
+                result = task()
+            except Exception as exc:
+                self.signals.update_result.emit("error", str(exc))
+            else:
+                self.signals.update_result.emit(action, result)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def update_finished(self, action, result):
+        self.updating = False
+        self.set_busy(False)
+        self.progress.setRange(0, 1)
+        self.progress.setValue(0)
+        if action == "error":
+            self.set_status(result)
+        elif action == "check":
+            if result is None:
+                self.set_status("Chưa có Release mới hơn.")
+                return
+            choice = W.QMessageBox.question(
+                self, "Cập nhật", f"Đã có bản {result}. Tải về và khởi động lại sau khi cài?")
+            if choice == W.QMessageBox.StandardButton.Yes:
+                self.update_task("apply", lambda: updater.download(result))
+            else:
+                self.set_status(f"Đã có bản {result}.")
+        else:
+            draft = DATA / "updates" / "draft.txt"
+            try:
+                self.save()
+                draft.write_text(self.text.toPlainText(), encoding="utf-8")
+                updater.launch_helper(result)
+            except OSError as exc:
+                self.set_status(str(exc))
+                return
+            self.close()
+
     def set_busy(self, busy):
-        for widget in (self.preview, self.export, self.engines, self.install, self.open_srt, self.text, self.timed):
+        for widget in (self.preview, self.export, self.engines, self.install, self.open_srt, self.text, self.timed, self.update_button):
             widget.setEnabled(not busy)
         self.cancel.setEnabled(busy and not self.installing)
         self.play.setEnabled(self.output is not None)
@@ -464,6 +530,9 @@ class App(W.QWidget):
             self.set_status(f"Không mở được audio. File nằm ở {self.output}")
 
     def closeEvent(self, event):
+        if self.updating:
+            event.ignore()
+            return
         if self.stop or self.installing:
             self.cancel_job()
             event.ignore()
@@ -475,10 +544,23 @@ class App(W.QWidget):
         event.accept()
 
 
+def run():
+    window = App()
+    window.show()
+    return application.exec()
+
+
 if __name__ == "__main__":
     application = W.QApplication(sys.argv)
     application.setStyle("Fusion")
     application.setStyleSheet(THEME)
-    window = App()
-    window.show()
-    sys.exit(application.exec())
+    if sys.platform == "win32" and not (ROOT / ".git").exists():
+        try:
+            with updater.portable_lock(ROOT):
+                exit_code = run()
+        except (OSError, RuntimeError) as exc:
+            W.QMessageBox.critical(None, "Tool Lồng Tiếng", str(exc))
+            exit_code = 1
+    else:
+        exit_code = run()
+    sys.exit(exit_code)

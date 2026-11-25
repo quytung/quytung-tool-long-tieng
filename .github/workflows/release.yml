@@ -1,0 +1,33 @@
+name: Publish portable release
+
+on:
+  push:
+    branches: [main]
+    paths: [version.py]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: portable-release
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and publish portable ZIP
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="$(python3 -c 'from version import VERSION; import updater; updater.version_tuple(VERSION); print("v" + VERSION)')"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "Release $tag already exists."
+            exit 0
+          fi
+          python3 build_release.py
+          gh release create "$tag" dist/Tool_Long_Tieng.zip dist/Tool_Long_Tieng.zip.sha256 \
+            --target "$GITHUB_SHA" --title "Tool Lồng Tiếng $tag" --generate-notes --latest
