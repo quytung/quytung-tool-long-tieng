@@ -122,6 +122,7 @@ class App(W.QWidget):
         self.jobs = []
         self.log_entries = deque(maxlen=800)
         self.active_job = None
+        self.priority_job = None
         self.devices = {}
         self.reading_engine = None
         self.gpu_status = "Đang dò GPU"
@@ -272,14 +273,15 @@ class App(W.QWidget):
         actions = W.QHBoxLayout()
         page.addLayout(actions)
         self.preview = self.button("Nghe thử", lambda: self.start(True))
-        self.export = self.button("Thêm vào hàng đợi", lambda: self.start(False))
-        self.export.setObjectName("primary")
+        self.export = self.button("Thêm vào hàng chờ", lambda: self.start(False))
+        self.run_now = self.button("Chạy", lambda: self.start(False, immediate=True))
+        self.run_now.setObjectName("primary")
         self.cancel = self.button("Dừng", self.cancel_job)
         self.play = self.button("Mở thư mục", self.open_folder)
         self.release_link = self.button("Releases", lambda: G.QDesktopServices.openUrl(
             C.QUrl(f"https://github.com/{updater.REPO}/releases")))
         actions.addWidget(self.release_link)
-        for button in (self.preview, self.export, self.cancel, self.play):
+        for button in (self.preview, self.export, self.run_now, self.cancel, self.play):
             actions.addWidget(button)
         actions.addStretch()
         self.progress = W.QProgressBar()
@@ -422,7 +424,7 @@ class App(W.QWidget):
         self.text.clear()
         self.timed.setChecked(False)
 
-    def start(self, preview):
+    def start(self, preview, immediate=False):
         try:
             engine = self.engine()
             if local_tts.is_local(engine) and not local_tts.is_installed(engine):
@@ -477,7 +479,15 @@ class App(W.QWidget):
             return
         self.refresh_queue(len(self.jobs) - 1)
         self.append_log(f"Đã thêm dự án · {len(combined)} câu")
-        self.next_job()
+        if immediate:
+            self.priority_job = job
+            if self.stop:
+                self.cancel_job()
+                self.set_status("Đang dừng bài hiện tại để chuyển sang bài mới…")
+            else:
+                self.next_job()
+        else:
+            self.set_status("Đã thêm vào hàng chờ.")
 
     def persist_queue(self):
         docs = []
@@ -552,9 +562,12 @@ class App(W.QWidget):
         self.next_job()
 
     def next_job(self):
-        if self.stop or self.installing or self.updating or self.pause_queue.isChecked():
+        if self.stop or self.installing or self.updating:
             return
-        job = next((item for item in self.jobs if item["state"] == "Chờ"), None)
+        job = self.priority_job
+        self.priority_job = None
+        if job is None and not self.pause_queue.isChecked():
+            job = next((item for item in self.jobs if item["state"] == "Chờ"), None)
         if job:
             self.active_job = job
             job["state"] = "Đang chạy"
@@ -563,6 +576,8 @@ class App(W.QWidget):
             self.run_audio(job)
 
     def run_audio(self, job, preview=False):
+        self.gpu_timer.setInterval(1000)
+        self.poll_hardware()
         self.reading_engine = job["options"].engine
         self.refresh_hardware()
         self.stop = stop = threading.Event()
@@ -680,11 +695,11 @@ class App(W.QWidget):
             self.close()
 
     def set_busy(self, busy):
-        for widget in (self.preview, self.export, self.engines, self.install, self.open_srt, self.text, self.timed, self.update_button):
+        for widget in (self.preview, self.export, self.run_now, self.engines, self.install, self.open_srt, self.text, self.timed, self.update_button):
             widget.setEnabled(not busy)
         self.cancel.setEnabled(busy and self.stop is not None and not self.installing)
         if self.active_job:
-            for widget in (self.export, self.engines, self.open_srt, self.text, self.timed):
+            for widget in (self.export, self.run_now, self.engines, self.open_srt, self.text, self.timed):
                 widget.setEnabled(True)
         self.queue_selection()
 
@@ -779,6 +794,7 @@ class App(W.QWidget):
         self.stop = None
         self.installing = False
         self.reading_engine = None
+        self.gpu_timer.setInterval(5000)
         self.set_busy(False)
         self.refresh()
 
