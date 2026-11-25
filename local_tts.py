@@ -104,7 +104,7 @@ def nvidia() -> tuple[str, tuple[int, int]]:
                               timeout=20, creationflags=_NOWIN).stdout.strip().splitlines()
     except Exception:  # noqa: BLE001
         return "", (0, 0)
-    m = re.search(r"CUDA Version:\s*(\d+)\.(\d+)", out or "")
+    m = re.search(r"CUDA(?: UMD)? Version:\s*(\d+)\.(\d+)", out or "")
     return (name[0].strip() if name else "NVIDIA"), ((int(m.group(1)), int(m.group(2))) if m else (0, 0))
 
 
