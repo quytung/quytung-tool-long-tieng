@@ -1,4 +1,5 @@
 """Client for the OmniVoice multipart WAV endpoint."""
+import asyncio
 import hashlib
 import io
 import os
@@ -29,6 +30,8 @@ class Options:
     workers: int = 2
     timeout: int = 120
     instruct: str = ""
+    engine: str = "vps"
+    language: str = "en"
 
 
 def endpoint(value):
@@ -125,15 +128,31 @@ def render(url, sample_path, sentences, destination, cache, options, stop, progr
         work = Path(temporary)
         sample_wav = work / "reference.wav"
         cut = ("-t", options.sample_seconds) if options.sample_seconds else ()
-        ffmpeg("-i", sample_path, *cut, "-vn", "-ac", "1", "-c:a", "pcm_s16le", sample_wav)
-        sample = sample_wav.read_bytes()
-        if not valid_wave(sample):
-            raise ValueError("File giọng mẫu quá ngắn hoặc hỏng.")
+        sample = b""
+        if options.engine != "edge":
+            ffmpeg("-i", sample_path, *cut, "-vn", "-ac", "1", "-c:a", "pcm_s16le", sample_wav)
+            sample = sample_wav.read_bytes()
+            if not valid_wave(sample):
+                raise ValueError("File giọng mẫu quá ngắn hoặc hỏng.")
         fingerprint = hashlib.sha256(sample).hexdigest()
 
         def synthesize(index, sentence):
             if stop.is_set():
                 raise Cancelled()
+            if options.engine != "vps":
+                raw = work / f"raw-{index}.wav"
+                if options.engine == "edge":
+                    import edge_tts
+
+                    source = raw.with_suffix(".mp3")
+                    asyncio.run(edge_tts.Communicate(sentence, url, connect_timeout=10,
+                                                     receive_timeout=options.timeout).save(str(source)))
+                    ffmpeg("-i", source, "-c:a", "pcm_s16le", raw)
+                else:
+                    import local_tts
+
+                    local_tts.synth(options.engine, sentence, sample_wav, raw, lang=options.language)
+                return standardize(index, raw)
             key = hashlib.sha256(repr((url, options.instruct, fingerprint, sentence)).encode()).hexdigest()
             cached = cache / (key + ".wav")
             data = cached.read_bytes() if not preview and cached.exists() else b""
@@ -150,8 +169,11 @@ def render(url, sample_path, sentences, destination, cache, options, stop, progr
                     finally:
                         partial.unlink(missing_ok=True)
             raw = work / f"raw-{index}.wav"
-            wav = work / f"{index}.wav"
             raw.write_bytes(data)
+            return standardize(index, raw)
+
+        def standardize(index, raw):
+            wav = work / f"{index}.wav"
             filters = [f"atempo={options.speed:.2f}"]
             if options.trim:
                 trim = "silenceremove=start_periods=1:start_threshold=-45dB"
@@ -162,7 +184,7 @@ def render(url, sample_path, sentences, destination, cache, options, stop, progr
             return wav
 
         parts = [None] * len(sentences)
-        with ThreadPoolExecutor(max_workers=options.workers) as pool:
+        with ThreadPoolExecutor(max_workers=options.workers if options.engine in ("vps", "edge") else 1) as pool:
             futures = {pool.submit(synthesize, i, s): i for i, s in enumerate(sentences)}
             try:
                 for count, future in enumerate(as_completed(futures), 1):

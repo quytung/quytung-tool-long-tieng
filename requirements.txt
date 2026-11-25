@@ -1,2 +1,4 @@
 requests>=2.32,<3
 imageio-ffmpeg>=0.6,<1
+PySide6-Essentials>=6.8,<7
+edge-tts>=7,<8

@@ -1,16 +1,32 @@
 # Tool Lồng Tiếng
 
-Ứng dụng Windows dùng OmniVoice trên GPU thuê. Máy cá nhân gửi từng câu và
-giọng tham chiếu đến VPS, sau đó ghép audio. Không cần cài model.
+Ứng dụng Windows dùng Qt (PySide6). Chọn **OmniVoice VPS** để gửi lời đọc và
+giọng tham chiếu đến GPU thuê. Tool cũng hỗ trợ Microsoft Edge TTS và các
+model cài riêng trên máy.
 
 ## Chạy
 
 - Cài Python 3.11 trở lên rồi mở `CHAY TOOL.bat`.
-- Trong PyCharm, chọn interpreter `.venv\Scripts\python.exe` và chạy `main.py`.
+- Trong PyCharm, cài `requirements.txt` vào interpreter của project rồi chạy
+  `main.py`. Nếu dùng môi trường do BAT tạo, chọn `.venv\Scripts\python.exe`.
 - Sau lần clone đầu tiên, dùng Ctrl+T trong cửa sổ project để lấy cập nhật.
   Chạy lại BAT nếu danh sách thư viện thay đổi.
 
-## Sử dụng
+## Máy đọc
+
+| Máy | Cần gì |
+| --- | --- |
+| OmniVoice VPS | Địa chỉ máy chủ và giọng mẫu. Có lời dặn nhấn nhá. |
+| OmniVoice Local | Cài máy đọc một lần và chọn giọng mẫu. Ưu tiên NVIDIA. |
+| Chatterbox Multilingual | Cài máy đọc một lần, chọn mẫu và mã ngôn ngữ engine hỗ trợ. |
+| VieNeu-TTS | Cài máy đọc một lần, dùng CPU và mẫu tiếng Việt. |
+| Microsoft Edge TTS | Internet và giọng dựng sẵn. |
+
+Các máy đọc cục bộ cài trong runtime riêng, có thể tải vài GB. Tốc độ, khoảng
+nghỉ, cắt lặng và chuẩn âm lượng áp dụng cho mọi máy. Lời dặn nhấn nhá ở
+bản này chỉ gửi khi chọn OmniVoice VPS.
+
+## Sử dụng OmniVoice VPS
 
 1. Dán URL VPS, tên miền tunnel hoặc IP kèm cổng. Có thể nhập đầy đủ `/v1/tts`.
 2. Chọn file giọng mẫu và dán văn bản.
@@ -29,6 +45,12 @@ Cài đặt và cache nằm tại `%LOCALAPPDATA%\ToolLongTieng`. URL và audio 
 không nằm trong thư mục repo. Nội dung và mẫu được gửi tới địa chỉ VPS đã chọn.
 
 ## Lịch sử cập nhật
+
+### 0.2.0
+
+- Giao diện Qt tối với cột chọn máy đọc, editor và bảng tùy chỉnh.
+- Thêm OmniVoice Local, Chatterbox Multilingual, VieNeu-TTS và Edge TTS.
+- Cài riêng từng engine local từ giao diện. Giữ cấu hình VPS đã lưu.
 
 ### 0.1.0
 
