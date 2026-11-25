@@ -6,7 +6,9 @@ model cài riêng trên máy.
 
 ## Chạy
 
-- Cài Python 3.11 trở lên rồi mở `CHAY TOOL.bat`.
+- Mở `CHAY TOOL.bat`. Nếu máy có Python 3.11 trở lên, BAT dùng bản sẵn có.
+  Nếu thiếu, BAT tải Python 3.13 từ python.org, xác thực chữ ký và cài cho
+  tài khoản Windows hiện tại, rồi tạo `.venv` và cài thư viện.
 - Trong PyCharm, cài `requirements.txt` vào interpreter của project rồi chạy
   `main.py`. Nếu dùng môi trường do BAT tạo, chọn `.venv\Scripts\python.exe`.
 - Sau lần clone đầu tiên, dùng Ctrl+T trong cửa sổ project để lấy cập nhật.
@@ -91,7 +93,7 @@ lời vẫn không vừa. Có thể tắt giữ mốc để xuất lời đọc 
 ## Bản ZIP và cập nhật
 
 Tải `Tool_Long_Tieng.zip` từ GitHub Releases, giải nén rồi mở
-`CHAY TOOL.bat` trên Windows có Python 3.11+. Nút **Cập nhật** tải Release mới,
+`CHAY TOOL.bat` trên Windows 64-bit. Lần đầu cần mạng để cài Python nếu thiếu và tải thư viện. Nút **Cập nhật** tải Release mới,
 kiểm tra SHA-256, lưu bản sao mã cũ trong `data/updates/` rồi mở lại bằng BAT.
 App giữ dữ liệu cá nhân, model và môi trường Python. Bản clone dùng Ctrl+T.
 
