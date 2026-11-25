@@ -1,5 +1,7 @@
 """Qt desktop entry point."""
 import json
+import os
+import subprocess
 import re
 import shutil
 import tempfile
@@ -104,6 +106,7 @@ class Signals(C.QObject):
     success = C.Signal(object)
     failure = C.Signal(str)
     update_result = C.Signal(str, object)
+    hardware = C.Signal(str, str)
 
 
 class App(W.QWidget):
@@ -119,8 +122,10 @@ class App(W.QWidget):
         self.jobs = []
         self.log_entries = deque(maxlen=800)
         self.active_job = None
-        self.parts = [""]
-        self.part_index = 0
+        self.devices = {}
+        self.reading_engine = None
+        self.gpu_status = "Đang dò GPU"
+        self.polling_gpu = False
         self.settings = self.load_settings()
         self.signals = Signals(self)
         self.signals.progress.connect(self.progress_update)
@@ -128,6 +133,7 @@ class App(W.QWidget):
         self.signals.success.connect(self.finished)
         self.signals.failure.connect(self.failed)
         self.signals.update_result.connect(self.update_finished)
+        self.signals.hardware.connect(self.hardware_result)
 
         page = W.QVBoxLayout(self)
         page.setContentsMargins(24, 18, 24, 18)
@@ -136,6 +142,7 @@ class App(W.QWidget):
         page.addLayout(header)
         self.label(header, "Lồng tiếng", "title")
         header.addStretch()
+        self.hardware = self.label(header, "", muted=True)
         self.label(header, f"v{VERSION}", muted=True)
         self.update_button = self.button("Cập nhật", self.check_update)
         header.addWidget(self.update_button)
@@ -184,11 +191,6 @@ class App(W.QWidget):
         self.project_name = W.QLineEdit()
         self.project_name.setPlaceholderText("Tên dự án (tự lấy dòng đầu nếu bỏ trống)")
         project.addWidget(self.project_name, 1)
-        self.part_selector = W.QComboBox()
-        self.part_selector.addItem("Phần 1")
-        self.part_selector.currentIndexChanged.connect(self.switch_part)
-        project.addWidget(self.part_selector)
-        project.addWidget(self.button("Tách phần", self.split_part))
         self.text = ScriptEditor()
         self.text.setPlaceholderText("Dán văn bản, nội dung SRT hoặc thả file TXT / SRT…")
         self.text.subtitle_dropped.connect(self.load_srt)
@@ -277,8 +279,6 @@ class App(W.QWidget):
         self.release_link = self.button("Releases", lambda: G.QDesktopServices.openUrl(
             C.QUrl(f"https://github.com/{updater.REPO}/releases")))
         actions.addWidget(self.release_link)
-        self.enqueue_part = self.button("Thêm phần này", lambda: self.start(False, True))
-        actions.addWidget(self.enqueue_part)
         for button in (self.preview, self.export, self.cancel, self.play):
             actions.addWidget(button)
         actions.addStretch()
@@ -295,6 +295,10 @@ class App(W.QWidget):
         self.set_busy(False)
         self.restore_queue()
         self.set_status("Chọn máy đọc và nhập văn bản.")
+        self.gpu_timer = C.QTimer(self)
+        self.gpu_timer.timeout.connect(self.poll_hardware)
+        self.gpu_timer.start(5000)
+        self.poll_hardware()
         draft = DATA / "updates" / "draft.txt"
         try:
             self.text.setPlainText(draft.read_text(encoding="utf-8"))
@@ -354,6 +358,7 @@ class App(W.QWidget):
         vps, edge = engine == "vps", engine == "edge"
         local = local_tts.is_local(engine)
         self.engines.setToolTip(ENGINES[engine][1] + ("\n" + local_tts.status(engine) if local else ""))
+        self.refresh_hardware()
         self.install.setVisible(local)
         self.install.setToolTip("Cài lại máy đọc" if local and local_tts.is_installed(engine) else "Cài máy đọc")
         for widget, visible in ((self.url, vps), (self.url_label, vps), (self.sample_row, not edge),
@@ -384,11 +389,6 @@ class App(W.QWidget):
         except (OSError, ValueError) as exc:
             self.set_status(str(exc))
             return
-        self.parts = [script]
-        self.part_index = 0
-        with C.QSignalBlocker(self.part_selector):
-            self.part_selector.clear()
-            self.part_selector.addItem("Phần 1")
         self.project_name.setText(path.stem)
         self.text.setPlainText(script)
         self.count.setText(f"{path.name} · {len(cues):,} mục" if cues else path.name)
@@ -418,51 +418,11 @@ class App(W.QWidget):
         return data
 
     def new_project(self):
-        self.parts = [""]
-        self.part_index = 0
-        with C.QSignalBlocker(self.part_selector):
-            self.part_selector.clear()
-            self.part_selector.addItem("Phần 1")
         self.project_name.clear()
         self.text.clear()
         self.timed.setChecked(False)
 
-    def switch_part(self, index):
-        if index < 0 or index == self.part_index:
-            return
-        self.parts[self.part_index] = self.text.toPlainText()
-        self.part_index = index
-        self.text.setPlainText(self.parts[index])
-
-    def split_part(self):
-        cursor = self.text.textCursor()
-        before = G.QTextCursor(self.text.document())
-        before.setPosition(cursor.selectionStart() if cursor.hasSelection() else cursor.position(),
-                           G.QTextCursor.MoveMode.KeepAnchor)
-        start = before.selectedText().replace("\u2029", "\n").replace("\u2028", "\n")
-        rest = self.text.toPlainText()[len(start):]
-        if not start.strip() or not rest.strip():
-            self.set_status("Đặt con trỏ tại chỗ cần chia thành hai phần.")
-            return
-        if not self.timed.isHidden():
-            try:
-                original, left, right = map(parse_srt, (start + rest, start, rest))
-                if left + right != original:
-                    raise ValueError()
-            except ValueError:
-                self.set_status("Với SRT, đặt con trỏ giữa hai mục phụ đề.")
-                return
-        index = self.part_index
-        self.parts[index:index + 1] = [start.strip(), rest.strip()]
-        self.part_index += 1
-        with C.QSignalBlocker(self.part_selector):
-            self.part_selector.clear()
-            self.part_selector.addItems([f"Phần {n}" for n in range(1, len(self.parts) + 1)])
-            self.part_selector.setCurrentIndex(self.part_index)
-        self.text.setPlainText(self.parts[self.part_index])
-        self.set_status("Đã tách kịch bản thành hai phần tại con trỏ.")
-
-    def start(self, preview, part_only=False):
+    def start(self, preview):
         try:
             engine = self.engine()
             if local_tts.is_local(engine) and not local_tts.is_installed(engine):
@@ -476,23 +436,12 @@ class App(W.QWidget):
             if engine != "edge" and not sample.resolve().is_relative_to(DATA.resolve()):
                 sample = save_reference(Reference(sample.stem, "", sample))
                 self.sample.setText(sample.relative_to(ROOT).as_posix())
-            self.parts[self.part_index] = self.text.toPlainText()
-            scripts = self.parts[self.part_index:self.part_index + 1] if preview or part_only else self.parts
-            sections = []
-            combined = []
-            combined_cues = []
-            for script in scripts:
-                if not script.strip():
-                    continue
-                is_srt = any("-->" in line and line.strip()[:1].isdigit() for line in script.splitlines())
-                cues = parse_srt(script) if is_srt else []
-                sentences = [segment for cue in cues for segment in split_text(cue.text)] if cues else list(split_text(script))
-                combined.extend(sentences)
-                combined_cues.extend(cues)
-                sections.append((sentences, cues))
-            timed = self.timed.isChecked() and not preview
-            if timed and any(not cues for _, cues in sections):
-                raise ValueError("Tắt giữ mốc nếu dự án có phần TXT lẫn SRT.")
+            script = self.text.toPlainText()
+            is_srt = any("-->" in line and line.strip()[:1].isdigit() for line in script.splitlines())
+            combined_cues = parse_srt(script) if is_srt else []
+            timed = bool(combined_cues and self.timed.isChecked() and not preview)
+            combined = ([line for cue in combined_cues for line in split_text(cue.text)]
+                        if combined_cues else list(split_text(script)))
             if preview:
                 fallback = "This is a short voice preview." if engine == "chatterbox" and self.lang.text() == "en" else "Xin chào, đây là giọng đọc thử."
                 combined = combined[:1] or [fallback]
@@ -506,8 +455,6 @@ class App(W.QWidget):
             return
 
         name = self.project_name.text().strip() or (combined[0][:45] if not preview else "Nghe thử")
-        if part_only and not preview:
-            name += f" - Phần {self.part_index + 1}"
         if preview:
             self.run_audio(dict(name=name, target=target, sample=sample, sentences=combined, options=options,
                                 destination=DATA / "preview.wav", cues=None, sections=[]), True)
@@ -522,7 +469,7 @@ class App(W.QWidget):
         job = dict(name=name, target=target, sample=sample, sentences=combined, options=options,
                    destination=folder / "giong-hoan-chinh.wav",
                    cues=sorted(combined_cues, key=lambda cue: cue.start_ms) if timed else None,
-                   sections=sections if len(sections) > 1 else [], state="Chờ")
+                   sections=[], state="Chờ")
         self.jobs.append(job)
         if not self.persist_queue():
             self.jobs.pop()
@@ -616,6 +563,8 @@ class App(W.QWidget):
             self.run_audio(job)
 
     def run_audio(self, job, preview=False):
+        self.reading_engine = job["options"].engine
+        self.refresh_hardware()
         self.stop = stop = threading.Event()
         self.set_busy(True)
         self.progress.setRange(0, len(job["sentences"]))
@@ -660,6 +609,9 @@ class App(W.QWidget):
 
     def install_engine(self):
         engine = self.engine()
+        self.devices.pop(engine, None)
+        self.reading_engine = engine
+        self.refresh_hardware()
         self.installing = True
         self.set_busy(True)
         self.progress.setRange(0, 0)
@@ -728,18 +680,62 @@ class App(W.QWidget):
             self.close()
 
     def set_busy(self, busy):
-        for widget in (self.preview, self.export, self.engines, self.install, self.open_srt, self.text, self.timed, self.update_button, self.enqueue_part):
+        for widget in (self.preview, self.export, self.engines, self.install, self.open_srt, self.text, self.timed, self.update_button):
             widget.setEnabled(not busy)
         self.cancel.setEnabled(busy and self.stop is not None and not self.installing)
         if self.active_job:
-            for widget in (self.export, self.engines, self.open_srt, self.text, self.timed, self.enqueue_part):
+            for widget in (self.export, self.engines, self.open_srt, self.text, self.timed):
                 widget.setEnabled(True)
         self.queue_selection()
 
     def set_status(self, text):
         self.status.setText(text)
 
+    def poll_hardware(self):
+        if self.polling_gpu:
+            return
+        self.polling_gpu = True
+
+        def work():
+            executable = shutil.which("nvidia-smi")
+            if not executable and sys.platform == "win32":
+                path = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "nvidia-smi.exe"
+                executable = str(path) if path.is_file() else None
+            if executable:
+                try:
+                    result = subprocess.run(
+                        [executable, "--query-gpu=name,utilization.gpu,memory.used,memory.total",
+                         "--format=csv,noheader,nounits"],
+                        capture_output=True, text=True, timeout=4, check=True,
+                        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                    )
+                    name, use, used, total = (field.strip() for field in result.stdout.splitlines()[0].split(","))
+                    self.signals.hardware.emit(f"GPU {use}% · VRAM {int(used)/1024:.1f}/{int(total)/1024:.1f} GB", name)
+                    return
+                except (OSError, ValueError, IndexError, subprocess.SubprocessError):
+                    pass
+            self.signals.hardware.emit("GPU —", "Không đọc được số liệu NVIDIA")
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def hardware_result(self, status, name):
+        self.polling_gpu = False
+        self.gpu_status = status
+        self.hardware.setToolTip(f"{name} · tải và bộ nhớ GPU của toàn máy")
+        self.refresh_hardware()
+
+    def refresh_hardware(self):
+        engine = self.reading_engine or self.engine()
+        device = {"vps": "VPS", "edge": "Qua mạng", "vieneu": "CPU"}.get(engine)
+        if device is None:
+            device = self.devices.get(engine, "Chưa xác nhận")
+        self.hardware.setText(f"{self.gpu_status}  |  Máy đọc: {device}")
+
     def append_log(self, text, level="INFO"):
+        device = re.search(r"chạy trên .*\((cuda|cpu|mps)\)\.", text, re.I)
+        if device and self.reading_engine:
+            self.devices[self.reading_engine] = device[1].upper()
+            self.refresh_hardware()
         clean = re.sub(r"https?://[^\s<>]+", "[URL]", str(text), flags=re.I)
         row = f"{datetime.now():%H:%M:%S}  {level}  {clean}"
         if level == "INFO" and ("CẢNH BÁO" in clean or "⚠" in clean):
@@ -782,6 +778,7 @@ class App(W.QWidget):
             self.progress.setValue(0)
         self.stop = None
         self.installing = False
+        self.reading_engine = None
         self.set_busy(False)
         self.refresh()
 
