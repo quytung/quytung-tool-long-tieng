@@ -20,10 +20,9 @@ import subprocess
 import sys
 import threading
 import time
-import venv
 from pathlib import Path
 
-RUNTIME = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "ToolLongTieng" / "runtime"
+from storage import DATA, RUNTIME, WORK
 WORKER = Path(__file__).resolve().parent / "tts_worker.py"
 
 # mã máy đọc trong Cài đặt → tên môi trường
@@ -80,6 +79,12 @@ def status(engine: str) -> str:
 def _env() -> dict:
     e = dict(os.environ)
     e.update(PYTHONIOENCODING="utf-8", PYTHONUTF8="1", PYTHONUNBUFFERED="1", PIP_DISABLE_PIP_VERSION_CHECK="1")
+    WORK.mkdir(parents=True, exist_ok=True)
+    cache = DATA / "models"
+    e.update(HF_HOME=str(cache / "huggingface"), HF_HUB_CACHE=str(cache / "huggingface" / "hub"),
+             HUGGINGFACE_HUB_CACHE=str(cache / "huggingface" / "hub"),
+             XDG_CACHE_HOME=str(cache), TORCH_HOME=str(cache / "torch"),
+             PIP_CACHE_DIR=str(DATA / "cache" / "pip"), TEMP=str(WORK), TMP=str(WORK), TMPDIR=str(WORK))
     e.pop("PYTHONHOME", None)
     e.pop("PYTHONPATH", None)
     return e
@@ -199,10 +204,7 @@ def install(engine: str, log=print, sample: Path | None = None) -> str:
     log(f"[1/4] Dò máy: {'card ' + card + f' (CUDA {cuda[0]}.{cuda[1]})' if card else 'không có card NVIDIA → chạy CPU'}")
     base = find_python(log)
     log(f"[1/4] Dựng môi trường riêng: runtime/{name} (Python: {base})")
-    if Path(base).resolve() == Path(sys.executable).resolve():
-        venv.EnvBuilder(with_pip=True, clear=True).create(d)
-    else:
-        _run([base, "-m", "venv", "--clear", str(d)], log)
+    _run([base, "-m", "venv", "--clear", str(d)], log)
     py = env_python(engine)
     if not py.is_file():
         raise InstallError(f"Không dựng được môi trường Python ở {d}.")

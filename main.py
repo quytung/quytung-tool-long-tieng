@@ -7,10 +7,12 @@ from pathlib import Path
 from PySide6 import QtCore as C, QtGui as G, QtWidgets as W
 
 import local_tts
+from library_ui import LibraryDialog
+from storage import DATA, LEGACY, OUTPUT, ROOT, sample_path
+from voice_library import Reference, save_reference
 from subtitles import parse_srt, read_srt
 from voice import Cancelled, Options, endpoint, render, split_text
 
-DATA = local_tts.RUNTIME.parent
 SETTINGS = DATA / "settings.json"
 ENGINES = {
     "vps": ("OmniVoice VPS", "GPU thuê · Dùng URL máy chủ và giọng mẫu"),
@@ -155,13 +157,14 @@ class App(W.QWidget):
         self.url_label = self.label(controls, "Địa chỉ VPS")
         controls.addWidget(self.url)
         self.sample = W.QLineEdit(self.settings.get("sample", ""))
-        self.sample.setPlaceholderText("WAV, MP3, FLAC…")
+        self.sample.setPlaceholderText("Chọn hoặc thêm trong kho giọng")
+        self.sample.setReadOnly(True)
         self.sample_label = self.label(controls, "Giọng mẫu")
         self.sample_row = W.QWidget()
         sample_layout = W.QHBoxLayout(self.sample_row)
         sample_layout.setContentsMargins(0, 0, 0, 0)
         sample_layout.addWidget(self.sample, 1)
-        sample_layout.addWidget(self.button("Chọn…", self.pick_sample))
+        sample_layout.addWidget(self.button("Kho giọng…", self.pick_sample))
         controls.addWidget(self.sample_row)
         self.edge = W.QComboBox()
         self.edge.setEditable(True)
@@ -224,7 +227,8 @@ class App(W.QWidget):
     @staticmethod
     def load_settings():
         try:
-            data = json.loads(SETTINGS.read_text(encoding="utf-8"))
+            src = SETTINGS if SETTINGS.exists() else LEGACY / "settings.json"
+            data = json.loads(src.read_text(encoding="utf-8"))
             return data if isinstance(data, dict) else {}
         except (OSError, ValueError):
             return {}
@@ -307,9 +311,14 @@ class App(W.QWidget):
         self.set_status("Đã mở SRT. Bật giữ mốc nếu cần WAV khớp phụ đề.")
 
     def pick_sample(self):
-        name, _ = W.QFileDialog.getOpenFileName(self, "Chọn giọng mẫu", "", "Audio (*.wav *.mp3 *.m4a *.flac *.ogg *.aac)")
-        if name:
-            self.sample.setText(name)
+        dialog = LibraryDialog(self)
+        dialog.exec()
+        if dialog.selected:
+            self.sample.setText(dialog.selected.relative_to(ROOT).as_posix())
+            try:
+                self.save()
+            except OSError as exc:
+                self.set_status(str(exc))
 
     def save(self):
         data = dict(engine=self.engine(), url=self.url.text().strip(), sample=self.sample.text().strip(),
@@ -330,11 +339,14 @@ class App(W.QWidget):
             if local_tts.is_local(engine) and not local_tts.is_installed(engine):
                 raise ValueError("Bấm Cài máy đọc trước khi dùng engine này.")
             target = endpoint(self.url.text()) if engine == "vps" else self.edge.currentText().strip()
-            sample = Path(self.sample.text().strip().strip('"'))
+            sample = sample_path(self.sample.text())
             if engine != "edge" and not sample.is_file():
                 raise ValueError("Chọn file giọng mẫu có trên máy.")
             if engine == "edge" and not target:
                 raise ValueError("Chọn giọng Microsoft.")
+            if engine != "edge" and not sample.resolve().is_relative_to(DATA.resolve()):
+                sample = save_reference(Reference(sample.stem, "", sample))
+                self.sample.setText(sample.relative_to(ROOT).as_posix())
             script = self.text.toPlainText()
             subtitles = parse_srt(script) if not self.timed.isHidden() else []
             sentences = [segment for cue in subtitles for segment in split_text(cue.text)] if subtitles else list(split_text(script))
@@ -346,12 +358,16 @@ class App(W.QWidget):
             else:
                 if not sentences:
                     raise ValueError("Nhập văn bản cần đọc.")
-                name, selected = W.QFileDialog.getSaveFileName(self, "Xuất audio", "long-tieng.wav", "WAV (*.wav);;MP3 (*.mp3)")
+                OUTPUT.mkdir(parents=True, exist_ok=True)
+                name, selected = W.QFileDialog.getSaveFileName(
+                    self, "Xuất audio", str(OUTPUT / "long-tieng.wav"), "WAV (*.wav);;MP3 (*.mp3)")
                 if not name:
                     return
                 destination = Path(name)
                 if not destination.suffix:
                     destination = destination.with_suffix(".mp3" if selected.startswith("MP3") else ".wav")
+                if not destination.resolve().is_relative_to(OUTPUT.resolve()):
+                    raise ValueError(f"Chọn file trong thư mục xuất của tool: {OUTPUT}")
                 if destination.suffix.lower() not in (".wav", ".mp3"):
                     raise ValueError("Đuôi file phải là WAV hoặc MP3.")
                 if engine != "edge" and destination.resolve() == sample.resolve():
@@ -359,7 +375,7 @@ class App(W.QWidget):
             data = self.save()
             data["instruct"] = " ".join(filter(None, (STYLES[data["style"]], data["instruct"])))
             options = Options(**{key: data[key] for key in Options.__dataclass_fields__})
-        except (ValueError, OSError) as exc:
+        except (ValueError, OSError, RuntimeError) as exc:
             self.set_status(str(exc))
             return
 

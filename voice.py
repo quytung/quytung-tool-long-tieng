@@ -64,25 +64,29 @@ def split_text(text, limit=280):
                 yield sentence
 
 
-def ffmpeg(*args):
+def ffmpeg_executable():
     executable = shutil.which("ffmpeg")
-    if not executable:
-        from imageio_ffmpeg import get_ffmpeg_exe
+    if executable:
+        return executable
+    from imageio_ffmpeg import get_ffmpeg_exe
 
-        executable = get_ffmpeg_exe()
+    return get_ffmpeg_exe()
+
+
+def ffmpeg(*args):
     process = subprocess.run(
-        [executable, "-nostdin", "-hide_banner", "-loglevel", "error", "-y", *map(str, args)],
+        [ffmpeg_executable(), "-nostdin", "-hide_banner", "-loglevel", "error", "-y", *map(str, args)],
         capture_output=True, timeout=300, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
     )
     if process.returncode:
         raise RuntimeError(process.stderr.decode("utf-8", "replace").strip() or "FFmpeg xử lý audio lỗi.")
 
 
-def valid_wave(data):
+def valid_wave(data, minimum=0.1):
     try:
         with wave.open(io.BytesIO(data)) as audio:
             frames = audio.getnframes()
-            return frames >= audio.getframerate() / 10 and len(audio.readframes(frames)) == (
+            return frames >= audio.getframerate() * minimum and len(audio.readframes(frames)) == (
                 frames * audio.getnchannels() * audio.getsampwidth()
             )
     except (EOFError, wave.Error):
@@ -131,7 +135,10 @@ def render(url, sample_path, sentences, destination, cache, options, stop, progr
         groups = [list(split_text(cue.text)) for cue in cues]
         sentences = [segment for group in groups for segment in group]
     cache.mkdir(parents=True, exist_ok=True)
-    with TemporaryDirectory(prefix="voice-") as temporary:
+    from storage import WORK
+
+    WORK.mkdir(parents=True, exist_ok=True)
+    with TemporaryDirectory(prefix="voice-", dir=WORK) as temporary:
         work = Path(temporary)
         sample_wav = work / "reference.wav"
         cut = ("-t", options.sample_seconds) if options.sample_seconds else ()

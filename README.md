@@ -41,8 +41,19 @@ hạ xuống một. Khi lỗi giữa lượt, bấm xuất lại với cùng n�
 và lời dặn để dùng lại các câu đã tải. Dừng có thể phải chờ các request
 đang chạy. Đổi tốc độ hoặc khoảng nghỉ vẫn dùng được cache giọng thô.
 
-Cài đặt và cache nằm tại `%LOCALAPPDATA%\ToolLongTieng`. URL và audio cá nhân
-không nằm trong thư mục repo. Nội dung và mẫu được gửi tới địa chỉ VPS đã chọn.
+## Kho giọng và dữ liệu
+
+Bấm **Kho giọng** cạnh ô giọng mẫu. **Cắt mẫu từ file** cho chọn mốc từ/đến,
+giảm nhiễu tùy chọn và nghe đoạn cắt trước khi lưu. **Chép giọng từ LD**
+nhận thư mục cài LD hoặc thư mục `voices` có `library.json`. Chọn các giọng cần
+chép, rồi chọn một giọng trong kho để dùng. App ưu tiên mẫu LD đã cắt và
+có thể tìm kho DubOne/LD tại các thư mục AppData quen thuộc.
+
+Dữ liệu nằm trong `data/` cạnh `main.py`: cài đặt, kho giọng, cache,
+model, runtime, file tạm và bản xuất trong `data/output/`. Git bỏ qua
+thư mục này. App đọc lại cài đặt từ vị trí cũ nếu chưa có cấu hình mới.
+Môi trường Python `.venv` và runtime của máy đọc cục bộ có thể cần
+cài lại khi chuyển thư mục hoặc máy. File đầu ra cũ giữ ở vị trí đã xuất.
 
 ## Văn bản và SRT
 
@@ -53,6 +64,12 @@ lặng, tăng tốc tối đa 2× khi câu dài hơn ô, và báo lỗi nếu ô
 lời vẫn không vừa. Có thể tắt giữ mốc để xuất lời đọc nối tiếp.
 
 ## Lịch sử cập nhật
+
+### 0.4.0
+
+- Kho giọng với cắt theo mốc, nghe thử đoạn cắt và giảm nhiễu.
+- Chép nhiều giọng từ kho LD/DubOne.
+- Gom dữ liệu và đầu ra vào thư mục project.
 
 ### 0.3.0
 
