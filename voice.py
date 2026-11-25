@@ -122,7 +122,14 @@ def request_audio(url, text, sample, options, stop):
     raise RuntimeError(error)
 
 
-def render(url, sample_path, sentences, destination, cache, options, stop, progress, preview=False):
+def render(url, sample_path, sentences, destination, cache, options, stop, progress, preview=False, cues=None):
+    if cues:
+        if cues[-1].end_ms > 14_400_000:
+            raise ValueError("Mốc SRT vượt 4 giờ. Tắt giữ mốc để đọc nối tiếp.")
+        if any(first.end_ms > second.start_ms for first, second in zip(cues, cues[1:])):
+            raise ValueError("SRT có mốc chồng nhau. Chỉnh mốc hoặc tắt giữ mốc.")
+        groups = [list(split_text(cue.text)) for cue in cues]
+        sentences = [segment for group in groups for segment in group]
     cache.mkdir(parents=True, exist_ok=True)
     with TemporaryDirectory(prefix="voice-") as temporary:
         work = Path(temporary)
@@ -199,14 +206,15 @@ def render(url, sample_path, sentences, destination, cache, options, stop, progr
         if stop.is_set():
             raise Cancelled()
         joined = work / "joined.wav"
-        with wave.open(str(joined), "wb") as audio:
-            audio.setparams((1, 2, RATE, 0, "NONE", "not compressed"))
-            gap = b"\x00\x00" * round(options.gap * RATE)
-            for index, part in enumerate(parts):
-                if index:
-                    audio.writeframesraw(gap)
-                with wave.open(str(part), "rb") as source:
-                    audio.writeframesraw(source.readframes(source.getnframes()))
+        if cues:
+            join_timed(joined, parts, groups, cues, work, stop)
+        else:
+            with wave.open(str(joined), "wb") as audio:
+                init_wave(audio)
+                for index, part in enumerate(parts):
+                    if index:
+                        silence(audio, round(options.gap * RATE))
+                    copy_wave(audio, part)
 
         filters = ["-af", "loudnorm=I=-16:TP=-1.5:LRA=11"] if options.normalize else []
         partial = destination.with_name(f".{uuid4().hex}{destination.suffix}")
@@ -217,3 +225,56 @@ def render(url, sample_path, sentences, destination, cache, options, stop, progr
             os.replace(partial, destination)
         finally:
             partial.unlink(missing_ok=True)
+
+
+def init_wave(audio):
+    audio.setparams((1, 2, RATE, 0, "NONE", "not compressed"))
+
+
+def silence(audio, frames):
+    while frames > 0:
+        count = min(frames, RATE)
+        audio.writeframesraw(bytes(count * 2))
+        frames -= count
+
+
+def copy_wave(destination, path):
+    with wave.open(str(path), "rb") as source:
+        destination.writeframesraw(source.readframes(source.getnframes()))
+
+
+def join_timed(path, parts, groups, cues, work, stop):
+    cursor = 0
+    part_index = 0
+    with wave.open(str(path), "wb") as output:
+        init_wave(output)
+        for index, (cue, group) in enumerate(zip(cues, groups), 1):
+            if stop.is_set():
+                raise Cancelled()
+            start = round(cue.start_ms * RATE / 1000)
+            end = round(cue.end_ms * RATE / 1000)
+            slot = work / f"cue-{index}.wav"
+            with wave.open(str(slot), "wb") as audio:
+                init_wave(audio)
+                for part in parts[part_index:part_index + len(group)]:
+                    copy_wave(audio, part)
+            part_index += len(group)
+            with wave.open(str(slot), "rb") as audio:
+                count = audio.getnframes()
+            available = end - start
+            if count > available:
+                ratio = count / available
+                if ratio > 2:
+                    raise ValueError(f"Mục SRT {index} cần đọc nhanh hơn 2× để vừa mốc. Rút lời hoặc tắt giữ mốc.")
+                fitted = work / f"cue-{index}-fit.wav"
+                ffmpeg("-i", slot, "-af", f"atempo={min(2, ratio * 1.03):.6f}",
+                       "-ar", RATE, "-ac", 1, "-c:a", "pcm_s16le", fitted)
+                slot = fitted
+            with wave.open(str(slot), "rb") as audio:
+                count = audio.getnframes()
+                if count > available:
+                    raise ValueError(f"Mục SRT {index} chưa vừa mốc sau khi chỉnh tốc độ.")
+                silence(output, start - cursor)
+                output.writeframesraw(audio.readframes(count))
+            cursor = start + count
+        silence(output, end - cursor)

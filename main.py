@@ -7,6 +7,7 @@ from pathlib import Path
 from PySide6 import QtCore as C, QtGui as G, QtWidgets as W
 
 import local_tts
+from subtitles import parse_srt, read_srt
 from voice import Cancelled, Options, endpoint, render, split_text
 
 DATA = local_tts.RUNTIME.parent
@@ -53,6 +54,39 @@ QCheckBox { background: transparent; spacing: 7px; }
 """
 
 
+class ScriptEditor(W.QPlainTextEdit):
+    subtitle_dropped = C.Signal(str)
+
+    @staticmethod
+    def subtitle_path(mime):
+        urls = mime.urls()
+        if len(urls) == 1 and urls[0].isLocalFile():
+            path = Path(urls[0].toLocalFile())
+            if path.suffix.lower() == ".srt":
+                return str(path)
+        return ""
+
+    def dragEnterEvent(self, event):
+        if self.isEnabled() and self.subtitle_path(event.mimeData()):
+            event.acceptProposedAction()
+            return
+        super().dragEnterEvent(event)
+
+    def dragMoveEvent(self, event):
+        if self.isEnabled() and self.subtitle_path(event.mimeData()):
+            event.acceptProposedAction()
+            return
+        super().dragMoveEvent(event)
+
+    def dropEvent(self, event):
+        path = self.subtitle_path(event.mimeData())
+        if self.isEnabled() and path:
+            self.subtitle_dropped.emit(path)
+            event.acceptProposedAction()
+            return
+        super().dropEvent(event)
+
+
 class Signals(C.QObject):
     progress = C.Signal(int, int)
     log = C.Signal(str)
@@ -96,12 +130,22 @@ class App(W.QWidget):
         sidebar.addStretch()
 
         editor = self.card(grid, 3)
-        self.label(editor, "Văn bản cần đọc", "section")
-        self.text = W.QPlainTextEdit()
-        self.text.setPlaceholderText("Dán lời thoại hoặc kịch bản vào đây…")
+        heading = W.QHBoxLayout()
+        editor.addLayout(heading)
+        self.label(heading, "Văn bản cần đọc", "section")
+        heading.addStretch()
+        self.open_srt = self.button("Mở SRT…", self.pick_srt)
+        heading.addWidget(self.open_srt)
+        self.text = ScriptEditor()
+        self.text.setPlaceholderText("Dán văn bản hoặc thả một file .srt vào đây…")
+        self.text.subtitle_dropped.connect(self.load_srt)
         editor.addWidget(self.text, 1)
         self.count = self.label(editor, "0 ký tự", muted=True)
-        self.text.textChanged.connect(lambda: self.count.setText(f"{len(self.text.toPlainText()):,} ký tự"))
+        self.timed = W.QCheckBox("Giữ mốc thời gian SRT")
+        self.timed.setToolTip("Mặc định đọc nối tiếp. Bật để giữ mốc, chèn khoảng lặng và tăng tốc câu dài khi cần.")
+        editor.addWidget(self.timed)
+        self.text.textChanged.connect(self.update_script)
+        self.update_script()
 
         controls = self.card(grid, 2)
         self.label(controls, "Giọng và cách đọc", "section")
@@ -239,6 +283,29 @@ class App(W.QWidget):
             widget.setVisible(visible)
             self.advanced.labelForField(widget).setVisible(visible)
 
+    def update_script(self):
+        text = self.text.toPlainText()
+        is_srt = any("-->" in line and line.strip()[:1].isdigit() for line in text.splitlines())
+        self.timed.setVisible(is_srt)
+        self.count.setText(f"{len(text):,} ký tự" + (" · SRT" if is_srt else ""))
+
+    def pick_srt(self):
+        name, _ = W.QFileDialog.getOpenFileName(self, "Mở phụ đề", "", "SubRip (*.srt)")
+        if name:
+            self.load_srt(name)
+
+    def load_srt(self, name):
+        try:
+            path = Path(name)
+            script = read_srt(path)
+            cues = parse_srt(script)
+        except (OSError, ValueError) as exc:
+            self.set_status(str(exc))
+            return
+        self.text.setPlainText(script)
+        self.count.setText(f"{path.name} · {len(cues):,} mục")
+        self.set_status("Đã mở SRT. Bật giữ mốc nếu cần WAV khớp phụ đề.")
+
     def pick_sample(self):
         name, _ = W.QFileDialog.getOpenFileName(self, "Chọn giọng mẫu", "", "Audio (*.wav *.mp3 *.m4a *.flac *.ogg *.aac)")
         if name:
@@ -268,7 +335,10 @@ class App(W.QWidget):
                 raise ValueError("Chọn file giọng mẫu có trên máy.")
             if engine == "edge" and not target:
                 raise ValueError("Chọn giọng Microsoft.")
-            sentences = list(split_text(self.text.toPlainText()))
+            script = self.text.toPlainText()
+            subtitles = parse_srt(script) if not self.timed.isHidden() else []
+            sentences = [segment for cue in subtitles for segment in split_text(cue.text)] if subtitles else list(split_text(script))
+            cues = subtitles if subtitles and self.timed.isChecked() and not preview else None
             if preview:
                 fallback = "This is a short voice preview." if engine == "chatterbox" and self.lang.text() == "en" else "Xin chào, đây là giọng đọc thử."
                 sentences = sentences[:1] or [fallback]
@@ -302,7 +372,7 @@ class App(W.QWidget):
         def work():
             try:
                 render(target, sample, sentences, destination, DATA / "cache", options, stop,
-                       self.signals.progress.emit, preview)
+                       self.signals.progress.emit, preview, cues)
             except Cancelled:
                 self.signals.failure.emit("Đã dừng.")
             except Exception as exc:
@@ -330,7 +400,7 @@ class App(W.QWidget):
         threading.Thread(target=work, daemon=True).start()
 
     def set_busy(self, busy):
-        for widget in (self.preview, self.export, self.engines, self.install):
+        for widget in (self.preview, self.export, self.engines, self.install, self.open_srt, self.text, self.timed):
             widget.setEnabled(not busy)
         self.cancel.setEnabled(busy and not self.installing)
         self.play.setEnabled(self.output is not None)

@@ -44,7 +44,20 @@ và lời dặn để dùng lại các câu đã tải. Dừng có thể phải 
 Cài đặt và cache nằm tại `%LOCALAPPDATA%\ToolLongTieng`. URL và audio cá nhân
 không nằm trong thư mục repo. Nội dung và mẫu được gửi tới địa chỉ VPS đã chọn.
 
+## Văn bản và SRT
+
+Dán văn bản, kéo thả một file `.srt` vào ô soạn thảo, hoặc bấm **Mở SRT…**.
+Mặc định tool chỉ đọc lời thoại theo thứ tự và bỏ số thứ tự cùng thời gian.
+Bật **Giữ mốc thời gian SRT** nếu muốn WAV khớp các ô phụ đề. Tool chèn khoảng
+lặng, tăng tốc tối đa 2× khi câu dài hơn ô, và báo lỗi nếu ô chồng nhau hoặc
+lời vẫn không vừa. Có thể tắt giữ mốc để xuất lời đọc nối tiếp.
+
 ## Lịch sử cập nhật
+
+### 0.3.0
+
+- Nhập SRT bằng kéo thả, chọn file hoặc dán vào trình soạn thảo.
+- Đọc nối tiếp hoặc giữ mốc SRT và xuất WAV.
 
 ### 0.2.0
 
