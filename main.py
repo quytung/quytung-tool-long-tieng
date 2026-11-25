@@ -146,15 +146,19 @@ class App(W.QWidget):
         sidebar = self.card(grid, 0)
         sidebar.parentWidget().setFixedWidth(232)
         self.label(sidebar, "Máy đọc", "section")
-        self.engines = W.QListWidget()
-        self.engines.addItems([info[0] for info in ENGINES.values()])
-        self.engines.setFixedHeight(224)
-        sidebar.addWidget(self.engines)
-        self.engine_note = self.label(sidebar, "", muted=True)
-        self.install = self.button("Cài máy đọc", self.install_engine)
-        sidebar.addWidget(self.install)
+        engine_row = W.QHBoxLayout()
+        sidebar.addLayout(engine_row)
+        self.engines = W.QComboBox()
+        self.engines.setSizeAdjustPolicy(W.QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self.engines.setMinimumContentsLength(8)
+        self.engines.addItems(["OmniVoice VPS", "OmniVoice Local", "Chatterbox", "VieNeu-TTS", "Edge TTS"])
+        engine_row.addWidget(self.engines, 1)
+        self.install = self.button("Cài", self.install_engine)
+        engine_row.addWidget(self.install)
         self.label(sidebar, "Hàng đợi", "section")
         self.queue = W.QListWidget()
+        self.queue.setHorizontalScrollBarPolicy(C.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.queue.setTextElideMode(C.Qt.TextElideMode.ElideRight)
         sidebar.addWidget(self.queue, 1)
         self.queue.currentRowChanged.connect(self.queue_selection)
         self.pause_queue = W.QCheckBox("Tạm dừng hàng đợi")
@@ -284,9 +288,10 @@ class App(W.QWidget):
         page.addWidget(self.progress)
         self.status = self.label(page, "", muted=True)
 
-        self.engines.currentRowChanged.connect(self.refresh)
+        self.engines.currentIndexChanged.connect(self.refresh)
         saved = self.settings.get("engine", "vps")
-        self.engines.setCurrentRow(list(ENGINES).index(saved) if saved in ENGINES else 0)
+        self.engines.setCurrentIndex(list(ENGINES).index(saved) if saved in ENGINES else 0)
+        self.refresh()
         self.set_busy(False)
         self.restore_queue()
         self.set_status("Chọn máy đọc và nhập văn bản.")
@@ -342,15 +347,15 @@ class App(W.QWidget):
         return widget
 
     def engine(self):
-        return list(ENGINES)[self.engines.currentRow()]
+        return list(ENGINES)[self.engines.currentIndex()]
 
     def refresh(self):
         engine = self.engine()
         vps, edge = engine == "vps", engine == "edge"
         local = local_tts.is_local(engine)
-        self.engine_note.setText(ENGINES[engine][1] + ("\n" + local_tts.status(engine) if local else ""))
+        self.engines.setToolTip(ENGINES[engine][1] + ("\n" + local_tts.status(engine) if local else ""))
         self.install.setVisible(local)
-        self.install.setText("Cài lại máy đọc" if local and local_tts.is_installed(engine) else "Cài máy đọc")
+        self.install.setToolTip("Cài lại máy đọc" if local and local_tts.is_installed(engine) else "Cài máy đọc")
         for widget, visible in ((self.url, vps), (self.url_label, vps), (self.sample_row, not edge),
                                 (self.sample_label, not edge), (self.edge, edge), (self.edge_label, edge),
                                 (self.style, vps), (self.style_label, vps), (self.instruct, vps),
@@ -574,7 +579,9 @@ class App(W.QWidget):
         with C.QSignalBlocker(self.queue):
             self.queue.clear()
             for job in self.jobs:
-                self.queue.addItem(f"{job['state']} · {job['name']}")
+                entry = W.QListWidgetItem(f"{job['state']} · {job['name']}")
+                entry.setToolTip(entry.text())
+                self.queue.addItem(entry)
             self.queue.setCurrentRow(selected)
         self.queue_selection()
 
