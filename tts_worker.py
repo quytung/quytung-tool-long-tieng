@@ -42,7 +42,10 @@ def wav_secs(p: Path) -> float:
 def pick_device():
     """NVIDIA → cuda (thử một phép tính thật, card đời mới có thể báo có mà không chạy được), Mac → mps, còn lại cpu."""
     import torch
-    if torch.cuda.is_available():
+    note(f"Torch {torch.__version__} · CUDA build {torch.version.cuda or 'CPU'} · CUDA khả dụng: {torch.cuda.is_available()}")
+    if not torch.cuda.is_available():
+        note("⚠ Torch không mở được CUDA. Kiểm tra CUDA build và driver trước khi cài lại.")
+    else:
         try:
             x = torch.zeros(8, 8, device="cuda")
             (x + 1).sum().item()

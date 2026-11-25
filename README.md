@@ -67,6 +67,18 @@ lời vẫn không vừa. Có thể tắt giữ mốc để xuất lời đọc 
 
 ## Lịch sử cập nhật
 
+### 0.6.0
+
+- Dán văn bản, mở hoặc kéo thả TXT/SRT. Dùng **Tách phần** tại con trỏ để
+  chia bài. Với SRT, chia giữa hai mục phụ đề.
+- Thêm cả bài hoặc riêng phần hiện tại vào hàng đợi. Bấm **Bài mới** để chuẩn
+  bị nội dung khác trong lúc bài hiện tại chạy. Hàng đợi được lưu trên máy.
+- Tự tạo thư mục ngày giờ và tên trong `data/output/`. Chọn bài xong rồi
+  bấm **Mở thư mục** để lấy WAV hoàn chỉnh, WAV từng câu và phụ đề SRT khớp
+  audio. Dự án nhiều phần có thêm thư mục cho từng phần.
+- Nhật ký trực tiếp có bộ lọc và nút chép. Log ghi thiết bị, tiến độ và lỗi
+  vào `data/logs/`. Khi GitHub giới hạn API, dùng nút **Releases**.
+
 ### 0.4.0
 
 - Kho giọng với cắt theo mốc, nghe thử đoạn cắt và giảm nhiễu.

@@ -97,7 +97,7 @@ class Cancelled(Exception):
     pass
 
 
-def request_audio(url, text, sample, options, stop):
+def request_audio(url, text, sample, options, stop, log=lambda _: None):
     for attempt in range(3):
         if stop.is_set():
             raise Cancelled()
@@ -121,12 +121,14 @@ def request_audio(url, text, sample, options, stop):
             error = "VPS phản hồi quá thời gian chờ."
         except requests.exceptions.ConnectionError:
             error = "Không kết nối được VPS. Kiểm tra địa chỉ và trạng thái máy thuê."
-        if attempt < 2 and stop.wait(2 ** (attempt + 1)):
-            raise Cancelled()
+        if attempt < 2:
+            log(f"CẢNH BÁO · {error} Thử lại sau {2 ** (attempt + 1)} giây.")
+            if stop.wait(2 ** (attempt + 1)):
+                raise Cancelled()
     raise RuntimeError(error)
 
 
-def render(url, sample_path, sentences, destination, cache, options, stop, progress, preview=False, cues=None):
+def render(url, sample_path, sentences, destination, cache, options, stop, progress, preview=False, cues=None, artifacts=False, log=lambda _: None, resume=None):
     if cues:
         if cues[-1].end_ms > 14_400_000:
             raise ValueError("Mốc SRT vượt 4 giờ. Tắt giữ mốc để đọc nối tiếp.")
@@ -150,7 +152,36 @@ def render(url, sample_path, sentences, destination, cache, options, stop, progr
                 raise ValueError("File giọng mẫu quá ngắn hoặc hỏng.")
         fingerprint = hashlib.sha256(sample).hexdigest()
 
+        log(f"Chuẩn bị xong · {len(sentences)} câu · {options.engine}")
+        clips = destination.parent / "tung-cau"
+        if artifacts:
+            clips.mkdir(exist_ok=True)
+        cleanup_resume = resume is None
+        resume = resume or destination.parent / ".resume"
+        if artifacts:
+            resume.mkdir(exist_ok=True, parents=True)
+
         def synthesize(index, sentence):
+            if stop.is_set():
+                raise Cancelled()
+            key = hashlib.sha256(repr((url, fingerprint, options, sentence)).encode()).hexdigest()
+            processed = resume / f"{key}.wav"
+            if artifacts and processed.is_file() and valid_wave(processed.read_bytes()):
+                log(f"Câu {index + 1}/{len(sentences)} · dùng lại")
+                return processed
+            log(f"Câu {index + 1}/{len(sentences)} · đang tạo")
+            try:
+                result = generate(index, sentence)
+            except Cancelled:
+                raise
+            except Exception as exc:
+                raise RuntimeError(f"Câu {index + 1}: {exc}") from exc
+            if artifacts:
+                result.replace(processed)
+                return processed
+            return result
+
+        def generate(index, sentence):
             if stop.is_set():
                 raise Cancelled()
             if options.engine != "vps":
@@ -165,14 +196,14 @@ def render(url, sample_path, sentences, destination, cache, options, stop, progr
                 else:
                     import local_tts
 
-                    local_tts.synth(options.engine, sentence, sample_wav, raw, lang=options.language)
+                    local_tts.synth(options.engine, sentence, sample_wav, raw, log=log, lang=options.language)
                 return standardize(index, raw)
             key = hashlib.sha256(repr((url, options.instruct, fingerprint, sentence)).encode()).hexdigest()
             cached = cache / (key + ".wav")
             data = cached.read_bytes() if not preview and cached.exists() else b""
             if not valid_wave(data):
                 try:
-                    data = request_audio(url, sentence, sample, options, stop)
+                    data = request_audio(url, sentence, sample, options, stop, log)
                 except RuntimeError as exc:
                     raise RuntimeError(f"Câu {index + 1}: {exc}") from exc
                 if not preview:
@@ -203,6 +234,7 @@ def render(url, sample_path, sentences, destination, cache, options, stop, progr
             try:
                 for count, future in enumerate(as_completed(futures), 1):
                     parts[futures[future]] = future.result()
+                    log(f"Câu {futures[future] + 1}/{len(sentences)} · xong")
                     progress(count, len(sentences))
             except BaseException:
                 stop.set()
@@ -213,15 +245,22 @@ def render(url, sample_path, sentences, destination, cache, options, stop, progr
         if stop.is_set():
             raise Cancelled()
         joined = work / "joined.wav"
+        records = []
+        log("Đang ghép audio và tính mốc phụ đề")
         if cues:
-            join_timed(joined, parts, groups, cues, work, stop)
+            records = join_timed(joined, parts, groups, cues, work, stop)
         else:
             with wave.open(str(joined), "wb") as audio:
                 init_wave(audio)
+                cursor = 0
+                gap = round(options.gap * RATE)
                 for index, part in enumerate(parts):
                     if index:
-                        silence(audio, round(options.gap * RATE))
-                    copy_wave(audio, part)
+                        silence(audio, gap)
+                        cursor += gap
+                    count = copy_wave(audio, part)
+                    records.append((sentences[index], cursor, cursor + count, part))
+                    cursor += count
 
         filters = ["-af", "loudnorm=I=-16:TP=-1.5:LRA=11"] if options.normalize else []
         partial = destination.with_name(f".{uuid4().hex}{destination.suffix}")
@@ -229,7 +268,17 @@ def render(url, sample_path, sentences, destination, cache, options, stop, progr
             ffmpeg("-i", joined, *filters, "-ar", RATE, "-ac", "1", partial)
             if stop.is_set():
                 raise Cancelled()
+            if artifacts:
+                for index, (_, _, _, clip) in enumerate(records, 1):
+                    shutil.copyfile(clip, clips / f"{index:04d}.wav")
+                subtitles = "\n\n".join(
+                    f"{index}\n{srt_stamp(start)} --> {srt_stamp(end)}\n{text}"
+                    for index, (text, start, end, _) in enumerate(records, 1)
+                )
+                (destination.parent / "phu-de.srt").write_text(subtitles + "\n", encoding="utf-8-sig")
             os.replace(partial, destination)
+            if artifacts and cleanup_resume:
+                shutil.rmtree(resume, ignore_errors=True)
         finally:
             partial.unlink(missing_ok=True)
 
@@ -247,12 +296,15 @@ def silence(audio, frames):
 
 def copy_wave(destination, path):
     with wave.open(str(path), "rb") as source:
-        destination.writeframesraw(source.readframes(source.getnframes()))
+        count = source.getnframes()
+        destination.writeframesraw(source.readframes(count))
+        return count
 
 
 def join_timed(path, parts, groups, cues, work, stop):
     cursor = 0
     part_index = 0
+    records = []
     with wave.open(str(path), "wb") as output:
         init_wave(output)
         for index, (cue, group) in enumerate(zip(cues, groups), 1):
@@ -284,4 +336,14 @@ def join_timed(path, parts, groups, cues, work, stop):
                 silence(output, start - cursor)
                 output.writeframesraw(audio.readframes(count))
             cursor = start + count
+            records.append((cue.text, start, cursor, slot))
         silence(output, end - cursor)
+    return records
+
+
+def srt_stamp(frames):
+    milliseconds = round(frames * 1000 / RATE)
+    seconds, fraction = divmod(milliseconds, 1000)
+    minutes, seconds = divmod(seconds, 60)
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours:02}:{minutes:02}:{seconds:02},{fraction:03}"

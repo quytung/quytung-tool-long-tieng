@@ -1,5 +1,11 @@
 """Qt desktop entry point."""
 import json
+import re
+import shutil
+import tempfile
+from datetime import datetime
+from collections import deque
+from dataclasses import asdict, replace
 import sys
 import threading
 from pathlib import Path
@@ -12,10 +18,11 @@ from version import VERSION
 from library_ui import LibraryDialog
 from storage import DATA, LEGACY, OUTPUT, ROOT, sample_path
 from voice_library import Reference, save_reference
-from subtitles import parse_srt, read_srt
+from subtitles import Cue, parse_srt, read_srt
 from voice import Cancelled, Options, endpoint, render, split_text
 
 SETTINGS = DATA / "settings.json"
+QUEUE_FILE = DATA / "queue.json"
 ENGINES = {
     "vps": ("OmniVoice VPS", "GPU thuê · Dùng URL máy chủ và giọng mẫu"),
     "omni_local": ("OmniVoice Local", "Nhân giọng trên máy · Ưu tiên NVIDIA"),
@@ -66,7 +73,7 @@ class ScriptEditor(W.QPlainTextEdit):
         urls = mime.urls()
         if len(urls) == 1 and urls[0].isLocalFile():
             path = Path(urls[0].toLocalFile())
-            if path.suffix.lower() == ".srt":
+            if path.suffix.lower() in (".srt", ".txt"):
                 return str(path)
         return ""
 
@@ -109,10 +116,15 @@ class App(W.QWidget):
         self.installing = False
         self.output = None
         self.updating = False
+        self.jobs = []
+        self.log_entries = deque(maxlen=800)
+        self.active_job = None
+        self.parts = [""]
+        self.part_index = 0
         self.settings = self.load_settings()
         self.signals = Signals(self)
         self.signals.progress.connect(self.progress_update)
-        self.signals.log.connect(self.set_status)
+        self.signals.log.connect(self.append_log)
         self.signals.success.connect(self.finished)
         self.signals.failure.connect(self.failed)
         self.signals.update_result.connect(self.update_finished)
@@ -141,17 +153,40 @@ class App(W.QWidget):
         self.engine_note = self.label(sidebar, "", muted=True)
         self.install = self.button("Cài máy đọc", self.install_engine)
         sidebar.addWidget(self.install)
-        sidebar.addStretch()
+        self.label(sidebar, "Hàng đợi", "section")
+        self.queue = W.QListWidget()
+        sidebar.addWidget(self.queue, 1)
+        self.queue.currentRowChanged.connect(self.queue_selection)
+        self.pause_queue = W.QCheckBox("Tạm dừng hàng đợi")
+        self.pause_queue.toggled.connect(lambda paused: None if paused else self.next_job())
+        sidebar.addWidget(self.pause_queue)
+        commands = W.QHBoxLayout()
+        self.up_job = self.button("Lên", self.move_job)
+        self.retry_job = self.button("Chạy lại", self.retry_selected)
+        commands.addWidget(self.up_job)
+        commands.addWidget(self.retry_job)
+        sidebar.addLayout(commands)
 
         editor = self.card(grid, 3)
         heading = W.QHBoxLayout()
         editor.addLayout(heading)
-        self.label(heading, "Văn bản cần đọc", "section")
+        self.label(heading, "Kịch bản dự án", "section")
         heading.addStretch()
-        self.open_srt = self.button("Mở SRT…", self.pick_srt)
+        self.open_srt = self.button("Mở TXT / SRT…", self.pick_srt)
         heading.addWidget(self.open_srt)
+        project = W.QHBoxLayout()
+        editor.addLayout(project)
+        project.addWidget(self.button("Bài mới", self.new_project))
+        self.project_name = W.QLineEdit()
+        self.project_name.setPlaceholderText("Tên dự án (tự lấy dòng đầu nếu bỏ trống)")
+        project.addWidget(self.project_name, 1)
+        self.part_selector = W.QComboBox()
+        self.part_selector.addItem("Phần 1")
+        self.part_selector.currentIndexChanged.connect(self.switch_part)
+        project.addWidget(self.part_selector)
+        project.addWidget(self.button("Tách phần", self.split_part))
         self.text = ScriptEditor()
-        self.text.setPlaceholderText("Dán văn bản hoặc thả một file .srt vào đây…")
+        self.text.setPlaceholderText("Dán văn bản, nội dung SRT hoặc thả file TXT / SRT…")
         self.text.subtitle_dropped.connect(self.load_srt)
         editor.addWidget(self.text, 1)
         self.count = self.label(editor, "0 ký tự", muted=True)
@@ -212,15 +247,34 @@ class App(W.QWidget):
         self.trim.setChecked(self.settings.get("trim", False))
         controls.addWidget(self.normalize)
         controls.addWidget(self.trim)
-        controls.addStretch()
+        log_header = W.QHBoxLayout()
+        self.label(log_header, "Nhật ký trực tiếp", "section")
+        log_header.addStretch()
+        self.log_filter = W.QComboBox()
+        self.log_filter.addItems(["Tất cả", "Cảnh báo", "Lỗi"])
+        self.log_filter.currentIndexChanged.connect(self.refresh_log)
+        log_header.addWidget(self.log_filter)
+        log_header.addWidget(self.button("Chép", self.copy_log))
+        controls.addLayout(log_header)
+        self.log_view = W.QPlainTextEdit()
+        self.log_view.setReadOnly(True)
+        self.log_view.setMinimumHeight(80)
+        self.log_view.setMaximumBlockCount(800)
+        self.log_view.setStyleSheet("font: 11px Consolas; color: #9de4d5;")
+        controls.addWidget(self.log_view, 1)
 
         actions = W.QHBoxLayout()
         page.addLayout(actions)
         self.preview = self.button("Nghe thử", lambda: self.start(True))
-        self.export = self.button("Xuất WAV / MP3…", lambda: self.start(False))
+        self.export = self.button("Thêm vào hàng đợi", lambda: self.start(False))
         self.export.setObjectName("primary")
         self.cancel = self.button("Dừng", self.cancel_job)
-        self.play = self.button("Mở audio", self.open_audio)
+        self.play = self.button("Mở thư mục", self.open_folder)
+        self.release_link = self.button("Releases", lambda: G.QDesktopServices.openUrl(
+            C.QUrl(f"https://github.com/{updater.REPO}/releases")))
+        actions.addWidget(self.release_link)
+        self.enqueue_part = self.button("Thêm phần này", lambda: self.start(False, True))
+        actions.addWidget(self.enqueue_part)
         for button in (self.preview, self.export, self.cancel, self.play):
             actions.addWidget(button)
         actions.addStretch()
@@ -234,6 +288,7 @@ class App(W.QWidget):
         saved = self.settings.get("engine", "vps")
         self.engines.setCurrentRow(list(ENGINES).index(saved) if saved in ENGINES else 0)
         self.set_busy(False)
+        self.restore_queue()
         self.set_status("Chọn máy đọc và nhập văn bản.")
         draft = DATA / "updates" / "draft.txt"
         try:
@@ -312,7 +367,7 @@ class App(W.QWidget):
         self.count.setText(f"{len(text):,} ký tự" + (" · SRT" if is_srt else ""))
 
     def pick_srt(self):
-        name, _ = W.QFileDialog.getOpenFileName(self, "Mở phụ đề", "", "SubRip (*.srt)")
+        name, _ = W.QFileDialog.getOpenFileName(self, "Mở kịch bản", "", "TXT / SRT (*.txt *.srt)")
         if name:
             self.load_srt(name)
 
@@ -320,13 +375,19 @@ class App(W.QWidget):
         try:
             path = Path(name)
             script = read_srt(path)
-            cues = parse_srt(script)
+            cues = parse_srt(script) if path.suffix.lower() == ".srt" else []
         except (OSError, ValueError) as exc:
             self.set_status(str(exc))
             return
+        self.parts = [script]
+        self.part_index = 0
+        with C.QSignalBlocker(self.part_selector):
+            self.part_selector.clear()
+            self.part_selector.addItem("Phần 1")
+        self.project_name.setText(path.stem)
         self.text.setPlainText(script)
-        self.count.setText(f"{path.name} · {len(cues):,} mục")
-        self.set_status("Đã mở SRT. Bật giữ mốc nếu cần WAV khớp phụ đề.")
+        self.count.setText(f"{path.name} · {len(cues):,} mục" if cues else path.name)
+        self.set_status(f"Đã mở {path.name}.")
 
     def pick_sample(self):
         dialog = LibraryDialog(self)
@@ -351,7 +412,52 @@ class App(W.QWidget):
         temporary.replace(SETTINGS)
         return data
 
-    def start(self, preview):
+    def new_project(self):
+        self.parts = [""]
+        self.part_index = 0
+        with C.QSignalBlocker(self.part_selector):
+            self.part_selector.clear()
+            self.part_selector.addItem("Phần 1")
+        self.project_name.clear()
+        self.text.clear()
+        self.timed.setChecked(False)
+
+    def switch_part(self, index):
+        if index < 0 or index == self.part_index:
+            return
+        self.parts[self.part_index] = self.text.toPlainText()
+        self.part_index = index
+        self.text.setPlainText(self.parts[index])
+
+    def split_part(self):
+        cursor = self.text.textCursor()
+        before = G.QTextCursor(self.text.document())
+        before.setPosition(cursor.selectionStart() if cursor.hasSelection() else cursor.position(),
+                           G.QTextCursor.MoveMode.KeepAnchor)
+        start = before.selectedText().replace("\u2029", "\n").replace("\u2028", "\n")
+        rest = self.text.toPlainText()[len(start):]
+        if not start.strip() or not rest.strip():
+            self.set_status("Đặt con trỏ tại chỗ cần chia thành hai phần.")
+            return
+        if not self.timed.isHidden():
+            try:
+                original, left, right = map(parse_srt, (start + rest, start, rest))
+                if left + right != original:
+                    raise ValueError()
+            except ValueError:
+                self.set_status("Với SRT, đặt con trỏ giữa hai mục phụ đề.")
+                return
+        index = self.part_index
+        self.parts[index:index + 1] = [start.strip(), rest.strip()]
+        self.part_index += 1
+        with C.QSignalBlocker(self.part_selector):
+            self.part_selector.clear()
+            self.part_selector.addItems([f"Phần {n}" for n in range(1, len(self.parts) + 1)])
+            self.part_selector.setCurrentIndex(self.part_index)
+        self.text.setPlainText(self.parts[self.part_index])
+        self.set_status("Đã tách kịch bản thành hai phần tại con trỏ.")
+
+    def start(self, preview, part_only=False):
         try:
             engine = self.engine()
             if local_tts.is_local(engine) and not local_tts.is_installed(engine):
@@ -365,48 +471,177 @@ class App(W.QWidget):
             if engine != "edge" and not sample.resolve().is_relative_to(DATA.resolve()):
                 sample = save_reference(Reference(sample.stem, "", sample))
                 self.sample.setText(sample.relative_to(ROOT).as_posix())
-            script = self.text.toPlainText()
-            subtitles = parse_srt(script) if not self.timed.isHidden() else []
-            sentences = [segment for cue in subtitles for segment in split_text(cue.text)] if subtitles else list(split_text(script))
-            cues = subtitles if subtitles and self.timed.isChecked() and not preview else None
+            self.parts[self.part_index] = self.text.toPlainText()
+            scripts = self.parts[self.part_index:self.part_index + 1] if preview or part_only else self.parts
+            sections = []
+            combined = []
+            combined_cues = []
+            for script in scripts:
+                if not script.strip():
+                    continue
+                is_srt = any("-->" in line and line.strip()[:1].isdigit() for line in script.splitlines())
+                cues = parse_srt(script) if is_srt else []
+                sentences = [segment for cue in cues for segment in split_text(cue.text)] if cues else list(split_text(script))
+                combined.extend(sentences)
+                combined_cues.extend(cues)
+                sections.append((sentences, cues))
+            timed = self.timed.isChecked() and not preview
+            if timed and any(not cues for _, cues in sections):
+                raise ValueError("Tắt giữ mốc nếu dự án có phần TXT lẫn SRT.")
             if preview:
                 fallback = "This is a short voice preview." if engine == "chatterbox" and self.lang.text() == "en" else "Xin chào, đây là giọng đọc thử."
-                sentences = sentences[:1] or [fallback]
-                destination = DATA / "preview.wav"
-            else:
-                if not sentences:
-                    raise ValueError("Nhập văn bản cần đọc.")
-                OUTPUT.mkdir(parents=True, exist_ok=True)
-                name, selected = W.QFileDialog.getSaveFileName(
-                    self, "Xuất audio", str(OUTPUT / "long-tieng.wav"), "WAV (*.wav);;MP3 (*.mp3)")
-                if not name:
-                    return
-                destination = Path(name)
-                if not destination.suffix:
-                    destination = destination.with_suffix(".mp3" if selected.startswith("MP3") else ".wav")
-                if not destination.resolve().is_relative_to(OUTPUT.resolve()):
-                    raise ValueError(f"Chọn file trong thư mục xuất của tool: {OUTPUT}")
-                if destination.suffix.lower() not in (".wav", ".mp3"):
-                    raise ValueError("Đuôi file phải là WAV hoặc MP3.")
-                if engine != "edge" and destination.resolve() == sample.resolve():
-                    raise ValueError("Chọn tên đầu ra khác file giọng mẫu.")
+                combined = combined[:1] or [fallback]
+            elif not combined:
+                raise ValueError("Nhập văn bản cần đọc.")
             data = self.save()
             data["instruct"] = " ".join(filter(None, (STYLES[data["style"]], data["instruct"])))
             options = Options(**{key: data[key] for key in Options.__dataclass_fields__})
         except (ValueError, OSError, RuntimeError) as exc:
-            self.set_status(str(exc))
+            self.report_error(str(exc))
             return
 
+        name = self.project_name.text().strip() or (combined[0][:45] if not preview else "Nghe thử")
+        if part_only and not preview:
+            name += f" - Phần {self.part_index + 1}"
+        if preview:
+            self.run_audio(dict(name=name, target=target, sample=sample, sentences=combined, options=options,
+                                destination=DATA / "preview.wav", cues=None, sections=[]), True)
+            return
+        try:
+            OUTPUT.mkdir(parents=True, exist_ok=True)
+            safe = re.sub(r"[^\w .-]", "_", name).strip(" .")[:50].rstrip(" .") or "Du-an"
+            folder = Path(tempfile.mkdtemp(prefix=f"{datetime.now():%Y-%m-%d_%H-%M-%S}_{safe}_", dir=OUTPUT))
+        except OSError as exc:
+            self.report_error(str(exc))
+            return
+        job = dict(name=name, target=target, sample=sample, sentences=combined, options=options,
+                   destination=folder / "giong-hoan-chinh.wav",
+                   cues=sorted(combined_cues, key=lambda cue: cue.start_ms) if timed else None,
+                   sections=sections if len(sections) > 1 else [], state="Chờ")
+        self.jobs.append(job)
+        if not self.persist_queue():
+            self.jobs.pop()
+            folder.rmdir()
+            return
+        self.refresh_queue(len(self.jobs) - 1)
+        self.append_log(f"Đã thêm dự án · {len(combined)} câu")
+        self.next_job()
+
+    def persist_queue(self):
+        docs = []
+        for job in self.jobs:
+            entry = job.copy()
+            entry["destination"] = job["destination"].relative_to(OUTPUT).as_posix()
+            entry["sample"] = job["sample"].relative_to(ROOT).as_posix() if job["sample"].is_relative_to(ROOT) else str(job["sample"])
+            entry["options"] = asdict(job["options"])
+            entry["cues"] = [asdict(cue) for cue in job["cues"]] if job["cues"] else None
+            entry["sections"] = [(lines, [asdict(cue) for cue in cues]) for lines, cues in job["sections"]]
+            docs.append(entry)
+        try:
+            DATA.mkdir(parents=True, exist_ok=True)
+            temporary = QUEUE_FILE.with_suffix(".tmp")
+            temporary.write_text(json.dumps(docs, ensure_ascii=False), encoding="utf-8")
+            temporary.replace(QUEUE_FILE)
+            return True
+        except OSError as exc:
+            self.report_error(str(exc))
+            return False
+
+    def restore_queue(self):
+        try:
+            documents = json.loads(QUEUE_FILE.read_text(encoding="utf-8")) if QUEUE_FILE.exists() else []
+            restored = []
+            for job in documents:
+                job["destination"] = (OUTPUT / job["destination"]).resolve()
+                if not job["destination"].is_relative_to(OUTPUT.resolve()) or not job["destination"].parent.is_dir():
+                    continue
+                job["sample"] = ROOT / job["sample"]
+                job["options"] = Options(**job["options"])
+                job["cues"] = [Cue(**cue) for cue in job["cues"]] if job["cues"] else None
+                job["sections"] = [(lines, [Cue(**cue) for cue in cues]) for lines, cues in job["sections"]]
+                if job["state"] == "Đang chạy":
+                    job["state"] = "Đã dừng"
+                restored.append(job)
+            self.jobs = restored
+            self.pause_queue.setChecked(any(job["state"] == "Chờ" for job in self.jobs))
+        except (OSError, ValueError, TypeError, KeyError) as exc:
+            self.report_error(f"Không mở lại được hàng đợi: {exc}")
+        self.refresh_queue(0)
+
+    def refresh_queue(self, selected=None):
+        if selected is None:
+            selected = self.queue.currentRow()
+        with C.QSignalBlocker(self.queue):
+            self.queue.clear()
+            for job in self.jobs:
+                self.queue.addItem(f"{job['state']} · {job['name']}")
+            self.queue.setCurrentRow(selected)
+        self.queue_selection()
+
+    def queue_selection(self, *_):
+        row = self.queue.currentRow()
+        job = self.jobs[row] if row >= 0 else None
+        self.play.setEnabled(bool(job and job["state"] in ("Xong", "Lỗi", "Đã dừng")))
+        self.retry_job.setEnabled(bool(job and job["state"] in ("Lỗi", "Đã dừng")))
+        self.up_job.setEnabled(bool(job and row > 0 and job["state"] == "Chờ" and self.jobs[row - 1]["state"] == "Chờ"))
+
+    def move_job(self):
+        row = self.queue.currentRow()
+        self.jobs[row - 1], self.jobs[row] = self.jobs[row], self.jobs[row - 1]
+        self.persist_queue()
+        self.refresh_queue(row - 1)
+
+    def retry_selected(self):
+        self.jobs[self.queue.currentRow()]["state"] = "Chờ"
+        self.persist_queue()
+        self.refresh_queue()
+        self.next_job()
+
+    def next_job(self):
+        if self.stop or self.installing or self.updating or self.pause_queue.isChecked():
+            return
+        job = next((item for item in self.jobs if item["state"] == "Chờ"), None)
+        if job:
+            self.active_job = job
+            job["state"] = "Đang chạy"
+            self.persist_queue()
+            self.refresh_queue()
+            self.run_audio(job)
+
+    def run_audio(self, job, preview=False):
         self.stop = stop = threading.Event()
         self.set_busy(True)
-        self.progress.setRange(0, len(sentences))
+        self.progress.setRange(0, len(job["sentences"]))
         self.progress.setValue(0)
-        self.set_status(f"Đang chuẩn bị {len(sentences)} câu…")
+        self.set_status(f"Đang đọc «{job['name']}»…")
+        self.append_log(f"Bắt đầu · {job['options'].engine} · {len(job['sentences'])} câu")
 
         def work():
+            destination = job["destination"]
+            cache = DATA / "cache"
+            resume = destination.parent / ".resume"
+            def make(sentences, path, cues):
+                render(job["target"], job["sample"], sentences, path, cache, job["options"], stop,
+                       self.signals.progress.emit, preview, cues, artifacts=not preview, log=self.signals.log.emit, resume=resume)
             try:
-                render(target, sample, sentences, destination, DATA / "cache", options, stop,
-                       self.signals.progress.emit, preview, cues)
+                if job["options"].engine == "omni_local":
+                    card, cuda = local_tts.nvidia()
+                    driver = f"{cuda[0]}.{cuda[1]}" if cuda != (0, 0) else "không rõ"
+                    self.signals.log.emit(f"NVIDIA: {card or 'không dò thấy'} · CUDA driver: {driver}")
+                if not destination.exists() or preview:
+                    make(job["sentences"], destination, job["cues"])
+                for index, (sentences, cues) in enumerate(job["sections"], 1):
+                    folder = destination.parent / f"phan-{index:02d}"
+                    folder.mkdir(exist_ok=True)
+                    path = folder / destination.name
+                    if not path.exists():
+                        self.signals.log.emit(f"Đang xuất phần {index}")
+                        if job["cues"]:
+                            offset = cues[0].start_ms
+                            cues = [replace(cue, start_ms=cue.start_ms - offset, end_ms=cue.end_ms - offset) for cue in cues]
+                        make(sentences, path, cues if job["cues"] else None)
+                if not preview:
+                    shutil.rmtree(resume, ignore_errors=True)
             except Cancelled:
                 self.signals.failure.emit("Đã dừng.")
             except Exception as exc:
@@ -459,13 +694,13 @@ class App(W.QWidget):
         self.progress.setRange(0, 1)
         self.progress.setValue(0)
         if action == "error":
-            self.set_status(result)
+            self.report_error(result)
         elif action == "check":
             if result is None:
                 self.set_status("Chưa có Release mới hơn.")
                 return
             if (ROOT / ".git").exists():
-                self.set_status(f"Đã có Release {result}. Dùng Ctrl+T trong PyCharm để cập nhật bản clone.")
+                self.set_status(f"Đã có Release {result}. Dùng Ctrl+T để cập nhật bản clone.")
                 G.QDesktopServices.openUrl(C.QUrl(f"https://github.com/{updater.REPO}/releases/tag/{result}"))
                 return
             choice = W.QMessageBox.question(
@@ -486,15 +721,50 @@ class App(W.QWidget):
             self.close()
 
     def set_busy(self, busy):
-        for widget in (self.preview, self.export, self.engines, self.install, self.open_srt, self.text, self.timed, self.update_button):
+        for widget in (self.preview, self.export, self.engines, self.install, self.open_srt, self.text, self.timed, self.update_button, self.enqueue_part):
             widget.setEnabled(not busy)
-        self.cancel.setEnabled(busy and not self.installing)
-        self.play.setEnabled(self.output is not None)
+        self.cancel.setEnabled(busy and self.stop is not None and not self.installing)
+        if self.active_job:
+            for widget in (self.export, self.engines, self.open_srt, self.text, self.timed, self.enqueue_part):
+                widget.setEnabled(True)
+        self.queue_selection()
 
     def set_status(self, text):
         self.status.setText(text)
 
+    def append_log(self, text, level="INFO"):
+        clean = re.sub(r"https?://[^\s<>]+", "[URL]", str(text), flags=re.I)
+        row = f"{datetime.now():%H:%M:%S}  {level}  {clean}"
+        if level == "INFO" and ("CẢNH BÁO" in clean or "⚠" in clean):
+            level = "CẢNH BÁO"
+            row = f"{datetime.now():%H:%M:%S}  {level}  {clean}"
+        self.log_entries.append((level, row))
+        if self.log_visible(level):
+            self.log_view.appendPlainText(row)
+        try:
+            logs = DATA / "logs"
+            logs.mkdir(parents=True, exist_ok=True)
+            with (logs / f"{datetime.now():%Y-%m-%d}.log").open("a", encoding="utf-8") as file:
+                file.write(row + "\n")
+        except OSError:
+            pass
+
+    def report_error(self, text):
+        self.append_log(text, "LỖI")
+        self.set_status(re.sub(r"https?://[^\s<>]+", "[URL]", str(text), flags=re.I))
+
+    def log_visible(self, level):
+        return self.log_filter.currentIndex() == 0 or (self.log_filter.currentIndex() == 1 and level == "CẢNH BÁO") or (self.log_filter.currentIndex() == 2 and level == "LỖI")
+
+    def refresh_log(self, *_):
+        self.log_view.setPlainText("\n".join(row for level, row in self.log_entries if self.log_visible(level)))
+        self.log_view.moveCursor(G.QTextCursor.MoveOperation.End)
+
+    def copy_log(self):
+        W.QApplication.clipboard().setText("\n".join(row for _, row in self.log_entries))
+
     def progress_update(self, done, total):
+        self.progress.setMaximum(total)
         self.progress.setValue(done)
         if self.stop and not self.stop.is_set():
             self.set_status(f"Đã xử lý {done}/{total} câu.")
@@ -509,19 +779,37 @@ class App(W.QWidget):
         self.refresh()
 
     def finished(self, result):
+        if self.active_job:
+            self.active_job["state"] = "Xong"
+            self.active_job = None
+            self.persist_queue()
+            self.refresh_queue()
         self.reset()
         if isinstance(result, str):
             self.set_status(f"Cài xong · {result}")
-            return
-        self.output, preview = result
-        self.play.setEnabled(True)
-        self.set_status("Đã tạo audio nghe thử." if preview else f"Đã xuất {self.output}")
-        if preview:
-            self.open_audio()
+        else:
+            self.output, preview = result
+            self.set_status("Đã tạo audio nghe thử." if preview else f"Đã xuất {self.output}")
+            if preview:
+                self.open_audio()
+        self.append_log("Hoàn thành." if not isinstance(result, str) else self.status.text())
+        C.QTimer.singleShot(0, self.next_job)
 
     def failed(self, message):
+        if self.active_job:
+            self.active_job["state"] = "Đã dừng" if self.stop.is_set() and message == "Đã dừng." else "Lỗi"
+            self.active_job = None
+            self.persist_queue()
+            self.refresh_queue()
         self.reset()
-        self.set_status(message)
+        self.report_error(message)
+        C.QTimer.singleShot(0, self.next_job)
+
+    def open_folder(self):
+        row = self.queue.currentRow()
+        if row >= 0:
+            folder = self.jobs[row]["destination"].parent
+            G.QDesktopServices.openUrl(C.QUrl.fromLocalFile(str(folder)))
 
     def cancel_job(self):
         if self.stop:

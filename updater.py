@@ -39,6 +39,10 @@ def latest():
     response = requests.get(query, timeout=(10, 20))
     if response.status_code == 404:
         return None
+    if response.status_code == 429 or (
+        response.status_code == 403 and ("rate limit" in response.text.lower() or response.headers.get("X-RateLimit-Remaining") == "0")
+    ):
+        raise ValueError("GitHub đang giới hạn kiểm tra. Dùng nút Releases để xem bản mới.")
     response.raise_for_status()
     release = response.json()
     tag = release["tag_name"]
