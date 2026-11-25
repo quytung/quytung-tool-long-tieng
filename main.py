@@ -127,7 +127,7 @@ class App(W.QWidget):
         self.label(header, f"v{VERSION}", muted=True)
         self.update_button = self.button("Cập nhật", self.check_update)
         header.addWidget(self.update_button)
-        self.update_button.setVisible(sys.platform == "win32" and not (ROOT / ".git").exists())
+        self.update_button.setVisible(sys.platform == "win32")
         grid = W.QHBoxLayout()
         grid.setSpacing(12)
         page.addLayout(grid, 1)
@@ -463,6 +463,10 @@ class App(W.QWidget):
         elif action == "check":
             if result is None:
                 self.set_status("Chưa có Release mới hơn.")
+                return
+            if (ROOT / ".git").exists():
+                self.set_status(f"Đã có Release {result}. Dùng Ctrl+T trong PyCharm để cập nhật bản clone.")
+                G.QDesktopServices.openUrl(C.QUrl(f"https://github.com/{updater.REPO}/releases/tag/{result}"))
                 return
             choice = W.QMessageBox.question(
                 self, "Cập nhật", f"Đã có bản {result}. Tải về và khởi động lại sau khi cài?")
