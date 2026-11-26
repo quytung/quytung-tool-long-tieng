@@ -21,7 +21,7 @@ from library_ui import LibraryDialog
 from storage import DATA, LEGACY, OUTPUT, ROOT, sample_path
 from voice_library import Reference, save_reference
 from subtitles import Cue, parse_srt, read_srt
-from voice import Cancelled, Options, endpoint, render, split_text
+from voice import Cancelled, Options, endpoint, render, split_text, group_sentences
 
 SETTINGS = DATA / "settings.json"
 QUEUE_FILE = DATA / "queue.json"
@@ -260,6 +260,10 @@ class App(W.QWidget):
         self.trim.setChecked(self.settings.get("trim", False))
         controls.addWidget(self.normalize)
         controls.addWidget(self.trim)
+        self.continuous = W.QCheckBox("Đọc liền đoạn")
+        self.continuous.setToolTip("Đọc nhiều câu trong một lượt. Giữ mốc SRT vẫn đọc theo từng mục phụ đề.")
+        self.continuous.setChecked(self.settings.get("continuous", False))
+        controls.addWidget(self.continuous)
         self.save_raw = W.QCheckBox("Lưu WAV thô để chẩn đoán")
         self.save_raw.setChecked(self.settings.get("save_raw", False))
         controls.addWidget(self.save_raw)
@@ -375,7 +379,7 @@ class App(W.QWidget):
         for widget, visible in ((self.url, vps), (self.url_label, vps), (self.sample_row, not edge),
                                 (self.sample_label, not edge), (self.edge, edge), (self.edge_label, edge),
                                 (self.style, vps), (self.style_label, vps), (self.instruct, vps),
-                                (self.save_raw, engine == "omni_local"), (self.device, engine == "omni_local"), (self.device_label, engine == "omni_local"),
+                                (self.continuous, engine == "omni_local"), (self.save_raw, engine == "omni_local"), (self.device, engine == "omni_local"), (self.device_label, engine == "omni_local"),
                                 (self.lang, engine == "chatterbox"), (self.lang_label, engine == "chatterbox")):
             widget.setVisible(visible)
         for widget, visible in ((self.cut, not edge), (self.workers, vps or edge), (self.timeout, vps or edge)):
@@ -422,7 +426,7 @@ class App(W.QWidget):
                     style=self.style.currentText(), instruct=self.instruct.text().strip(),
                     speed=self.speed.value(), gap=self.gap.value(), sample_seconds=self.cut.value(),
                     workers=self.workers.value(), timeout=self.timeout.value(),
-                    save_raw=self.save_raw.isChecked(), normalize=self.normalize.isChecked(), trim=self.trim.isChecked())
+                    continuous=self.continuous.isChecked(), save_raw=self.save_raw.isChecked(), normalize=self.normalize.isChecked(), trim=self.trim.isChecked())
         DATA.mkdir(parents=True, exist_ok=True)
         temporary = SETTINGS.with_suffix(".tmp")
         temporary.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -454,6 +458,8 @@ class App(W.QWidget):
             timed = bool(combined_cues and self.timed.isChecked() and not preview)
             combined = ([line for cue in combined_cues for line in split_text(cue.text)]
                         if combined_cues else list(split_text(script)))
+            if engine == "omni_local" and self.continuous.isChecked() and not timed:
+                combined = list(group_sentences(combined))
             if preview:
                 fallback = "This is a short voice preview." if engine == "chatterbox" and self.lang.text() == "en" else "Xin chào, đây là giọng đọc thử."
                 combined = combined[:1] or [fallback]

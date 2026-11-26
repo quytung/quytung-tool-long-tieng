@@ -66,6 +66,18 @@ def split_text(text, limit=280):
                 yield sentence
 
 
+def group_sentences(sentences, limit=600):
+    """Group short sentences into bounded model inputs for continuous narration."""
+    paragraph = ""
+    for sentence in sentences:
+        if paragraph and len(paragraph) + 1 + len(sentence) > limit:
+            yield paragraph
+            paragraph = ""
+        paragraph = f"{paragraph} {sentence}" if paragraph else sentence
+    if paragraph:
+        yield paragraph
+
+
 def ffmpeg_executable():
     executable = shutil.which("ffmpeg")
     if executable:
