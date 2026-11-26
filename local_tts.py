@@ -392,7 +392,7 @@ atexit.register(stop)
 
 
 def synth(engine: str, text: str, sample: Path | None, out: Path, log=print, lang: str = "en",
-          steps: int = 16, device: str = "auto") -> float:
+          steps: int = 32, device: str = "auto") -> float:
     """Đọc 1 câu ra file WAV. Trả về số giây máy đọc mất."""
     job = {"text": text, "ref": str(sample) if sample else "", "out": str(out), "lang": lang, "steps": steps}
     for attempt in (1, 2):

@@ -101,8 +101,7 @@ class Omni:
     def say(self, job: dict, out: Path) -> None:
         import numpy as np
         import soundfile as sf
-        # 16 bước: LD đo nhanh gấp 2,4 lần 32 bước mà giọng không khác (8 bước = chế độ nhanh)
-        kw: dict = {"text": job["text"], "num_step": int(job.get("steps") or 16)}
+        kw: dict = {"text": job["text"], "num_step": int(job.get("steps") or 32)}
         ref = job.get("ref") or ""
         if ref:
             pr = self._prompt(ref)
