@@ -33,6 +33,7 @@ class Options:
     engine: str = "vps"
     language: str = "en"
     device: str = "auto"
+    save_raw: bool = False
 
 
 def endpoint(value):
@@ -157,6 +158,11 @@ def render(url, sample_path, sentences, destination, cache, options, stop, progr
         clips = destination.parent / "tung-cau"
         if artifacts:
             clips.mkdir(exist_ok=True)
+        raw_folder = destination.parent / "tung-cau-tho"
+        diagnostics = artifacts and options.engine == "omni_local" and options.save_raw
+        if diagnostics:
+            raw_folder.mkdir(exist_ok=True)
+            log(f"Lưu WAV thô trước xử lý vào {raw_folder}")
         cleanup_resume = resume is None
         resume = resume or destination.parent / ".resume"
         if artifacts:
@@ -167,7 +173,12 @@ def render(url, sample_path, sentences, destination, cache, options, stop, progr
                 raise Cancelled()
             key = hashlib.sha256(repr((url, fingerprint, options, sentence)).encode()).hexdigest()
             processed = resume / f"{key}.wav"
-            if artifacts and processed.is_file() and valid_wave(processed.read_bytes()):
+            raw_cache = resume / f"{key}.raw.wav"
+            raw_output = raw_folder / f"{index + 1:04d}.wav"
+            if (artifacts and processed.is_file() and valid_wave(processed.read_bytes())
+                    and (not diagnostics or raw_cache.is_file())):
+                if diagnostics:
+                    shutil.copyfile(raw_cache, raw_output)
                 log(f"Câu {index + 1}/{len(sentences)} · dùng lại")
                 return processed
             log(f"Câu {index + 1}/{len(sentences)} · đang tạo")
@@ -178,6 +189,11 @@ def render(url, sample_path, sentences, destination, cache, options, stop, progr
             except Exception as exc:
                 raise RuntimeError(f"Câu {index + 1}: {exc}") from exc
             if artifacts:
+                if diagnostics:
+                    # Publish the processed cache only after its matching raw WAV exists.
+                    processed.unlink(missing_ok=True)
+                    (work / f"raw-{index}.wav").replace(raw_cache)
+                    shutil.copyfile(raw_cache, raw_output)
                 result.replace(processed)
                 return processed
             return result

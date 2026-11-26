@@ -260,6 +260,9 @@ class App(W.QWidget):
         self.trim.setChecked(self.settings.get("trim", False))
         controls.addWidget(self.normalize)
         controls.addWidget(self.trim)
+        self.save_raw = W.QCheckBox("Lưu WAV thô để chẩn đoán")
+        self.save_raw.setChecked(self.settings.get("save_raw", False))
+        controls.addWidget(self.save_raw)
         log_header = W.QHBoxLayout()
         self.label(log_header, "Nhật ký trực tiếp", "section")
         log_header.addStretch()
@@ -372,7 +375,7 @@ class App(W.QWidget):
         for widget, visible in ((self.url, vps), (self.url_label, vps), (self.sample_row, not edge),
                                 (self.sample_label, not edge), (self.edge, edge), (self.edge_label, edge),
                                 (self.style, vps), (self.style_label, vps), (self.instruct, vps),
-                                (self.device, engine == "omni_local"), (self.device_label, engine == "omni_local"),
+                                (self.save_raw, engine == "omni_local"), (self.device, engine == "omni_local"), (self.device_label, engine == "omni_local"),
                                 (self.lang, engine == "chatterbox"), (self.lang_label, engine == "chatterbox")):
             widget.setVisible(visible)
         for widget, visible in ((self.cut, not edge), (self.workers, vps or edge), (self.timeout, vps or edge)):
@@ -419,7 +422,7 @@ class App(W.QWidget):
                     style=self.style.currentText(), instruct=self.instruct.text().strip(),
                     speed=self.speed.value(), gap=self.gap.value(), sample_seconds=self.cut.value(),
                     workers=self.workers.value(), timeout=self.timeout.value(),
-                    normalize=self.normalize.isChecked(), trim=self.trim.isChecked())
+                    save_raw=self.save_raw.isChecked(), normalize=self.normalize.isChecked(), trim=self.trim.isChecked())
         DATA.mkdir(parents=True, exist_ok=True)
         temporary = SETTINGS.with_suffix(".tmp")
         temporary.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
