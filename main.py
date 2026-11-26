@@ -220,6 +220,12 @@ class App(W.QWidget):
         sample_layout.addWidget(self.sample, 1)
         sample_layout.addWidget(self.button("Kho giọng…", self.pick_sample))
         controls.addWidget(self.sample_row)
+        self.device_label = self.label(controls, "Thiết bị OmniVoice")
+        self.device = W.QComboBox()
+        for label, value in (("Tự động", "auto"), ("CPU", "cpu"), ("GPU NVIDIA (CUDA)", "cuda")):
+            self.device.addItem(label, value)
+        self.device.setCurrentIndex(max(0, self.device.findData(self.settings.get("device", "auto"))))
+        controls.addWidget(self.device)
         self.edge = W.QComboBox()
         self.edge.setEditable(True)
         self.edge.addItems(["vi-VN-HoaiMyNeural", "vi-VN-NamMinhNeural", "en-US-AriaNeural", "en-US-GuyNeural"])
@@ -366,6 +372,7 @@ class App(W.QWidget):
         for widget, visible in ((self.url, vps), (self.url_label, vps), (self.sample_row, not edge),
                                 (self.sample_label, not edge), (self.edge, edge), (self.edge_label, edge),
                                 (self.style, vps), (self.style_label, vps), (self.instruct, vps),
+                                (self.device, engine == "omni_local"), (self.device_label, engine == "omni_local"),
                                 (self.lang, engine == "chatterbox"), (self.lang_label, engine == "chatterbox")):
             widget.setVisible(visible)
         for widget, visible in ((self.cut, not edge), (self.workers, vps or edge), (self.timeout, vps or edge)):
@@ -407,7 +414,7 @@ class App(W.QWidget):
                 self.set_status(str(exc))
 
     def save(self):
-        data = dict(engine=self.engine(), url=self.url.text().strip(), sample=self.sample.text().strip(),
+        data = dict(device=self.device.currentData(), engine=self.engine(), url=self.url.text().strip(), sample=self.sample.text().strip(),
                     edge=self.edge.currentText().strip(), language=self.lang.text().strip() or "en",
                     style=self.style.currentText(), instruct=self.instruct.text().strip(),
                     speed=self.speed.value(), gap=self.gap.value(), sample_seconds=self.cut.value(),

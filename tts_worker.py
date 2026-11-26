@@ -61,10 +61,14 @@ def pick_device():
 
 # ───────────────────────────── OmniVoice (k2-fsa) ─────────────────────────────
 class Omni:
-    def __init__(self):
+    def __init__(self, device="auto"):
         import torch
         from omnivoice import OmniVoice
-        dev, name = pick_device()
+        if device not in ("auto", "cpu", "cuda"):
+            raise ValueError(f"Thiết bị OmniVoice không hợp lệ: {device}")
+        dev, name = ("cpu", "CPU") if device == "cpu" else pick_device()
+        if device == "cuda" and dev != "cuda":
+            raise RuntimeError("Không chạy được CUDA. Kiểm tra Torch và driver NVIDIA hoặc chọn CPU.")
         # fp16 chỉ trên NVIDIA. Trên Mac fp16 từng làm sập tiến trình (ghi chú của LD), CPU thì fp16 chậm hơn.
         dtype = torch.float16 if dev == "cuda" else torch.float32
         self.model = OmniVoice.from_pretrained("k2-fsa/OmniVoice", device_map=("cuda:0" if dev == "cuda" else dev),
@@ -207,7 +211,7 @@ def main() -> None:
     sys.stdout = sys.stderr
     t0 = time.time()
     try:
-        eng = ENGINES[which]()
+        eng = Omni(sys.argv[2]) if which == "omnivoice" and len(sys.argv) > 2 else ENGINES[which]()
     except Exception as ex:  # noqa: BLE001
         say(ok=False, fatal=True, error=f"Nạp {which} lỗi: {type(ex).__name__}: {ex}",
             trace=traceback.format_exc()[-1500:])

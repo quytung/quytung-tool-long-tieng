@@ -286,14 +286,15 @@ def install(engine: str, log=print, sample: Path | None = None) -> str:
 
 # ─────────────────────────────── chạy đọc ───────────────────────────────
 class _Worker:
-    def __init__(self, engine: str, log):
+    def __init__(self, engine: str, log, device: str):
+        self.device = device
         self.engine = engine
         self.lock = threading.Lock()
         self.q: queue.Queue = queue.Queue()
         py = env_python(engine)
         if not py.is_file():
             raise RuntimeError(f"Chưa cài máy đọc «{LABELS[engine]}». Vào Cài đặt › Giọng đọc, bấm «Cài máy đọc».")
-        self.p = subprocess.Popen([str(py), str(WORKER), ENGINES[engine]], stdin=subprocess.PIPE,
+        self.p = subprocess.Popen([str(py), str(WORKER), ENGINES[engine], device], stdin=subprocess.PIPE,
                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8",
                                   errors="replace", env=_env(), bufsize=1, creationflags=_NOWIN)
         self.err: list[str] = []
@@ -366,11 +367,16 @@ _WORKERS: dict[str, _Worker] = {}
 _GUARD = threading.Lock()
 
 
-def _get(engine: str, log) -> _Worker:
+def _get(engine: str, log, device: str) -> _Worker:
     with _GUARD:
         w = _WORKERS.get(engine)
+        if w is not None and w.device != device:
+            w.kill()
+            w.p.wait()
+            _WORKERS.pop(engine)
+            w = None
         if w is None or not w.alive():
-            w = _Worker(engine, log)
+            w = _Worker(engine, log, device)
             _WORKERS[engine] = w
         return w
 
@@ -386,11 +392,11 @@ atexit.register(stop)
 
 
 def synth(engine: str, text: str, sample: Path | None, out: Path, log=print, lang: str = "en",
-          steps: int = 16) -> float:
+          steps: int = 16, device: str = "auto") -> float:
     """Đọc 1 câu ra file WAV. Trả về số giây máy đọc mất."""
     job = {"text": text, "ref": str(sample) if sample else "", "out": str(out), "lang": lang, "steps": steps}
     for attempt in (1, 2):
-        w = _get(engine, log)
+        w = _get(engine, log, device)
         msg = w.say(job, log)
         if msg.get("ok"):
             return float(msg.get("secs") or 0)

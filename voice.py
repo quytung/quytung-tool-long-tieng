@@ -32,6 +32,7 @@ class Options:
     instruct: str = ""
     engine: str = "vps"
     language: str = "en"
+    device: str = "auto"
 
 
 def endpoint(value):
@@ -196,7 +197,8 @@ def render(url, sample_path, sentences, destination, cache, options, stop, progr
                 else:
                     import local_tts
 
-                    local_tts.synth(options.engine, sentence, sample_wav, raw, log=log, lang=options.language)
+                    local_tts.synth(options.engine, sentence, sample_wav, raw, log=log, lang=options.language,
+                                    device=options.device if options.engine == "omni_local" else "auto")
                 return standardize(index, raw)
             key = hashlib.sha256(repr((url, options.instruct, fingerprint, sentence)).encode()).hexdigest()
             cached = cache / (key + ".wav")
