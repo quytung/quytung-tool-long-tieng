@@ -127,6 +127,37 @@ def _fix_perth():
         note("Perth thiếu lớp dấu chìm: dùng bản rỗng để vẫn đọc được.")
 
 
+class Cosy:
+    def __init__(self):
+        from huggingface_hub import snapshot_download
+        source = Path(sys.prefix) / "source"
+        sys.path[:0] = [str(source), str(source / "third_party" / "Matcha-TTS")]
+        from cosyvoice.cli.cosyvoice import AutoModel
+        model = snapshot_download("FunAudioLLM/Fun-CosyVoice3-0.5B-2512",
+                                  revision="29e01c4e8d000f4bcd70751be16fa94bf3d85a18",
+                                  allow_patterns=["cosyvoice3.yaml", "config.json", "configuration.json",
+                                                  "campplus.onnx", "speech_tokenizer_v3.onnx", "llm.pt",
+                                                  "flow.pt", "hift.pt", "CosyVoice-BlankEN/*"])
+        self.model = AutoModel(model_dir=model)
+        if self.model.frontend.device.type == "cpu":
+            for module in (self.model.model.llm, self.model.model.flow, self.model.model.hift):
+                module.float()
+        note(f"CosyVoice chạy trên {self.model.frontend.device} ({self.model.frontend.device.type}).")
+
+    def say(self, job, out):
+        import soundfile as sf
+        transcript = job["ref_text"].strip()
+        if not transcript or not job["ref"]:
+            raise ValueError("CosyVoice cần giọng mẫu và lời thoại tương ứng.")
+        if sf.info(job["ref"]).duration > 30:
+            raise ValueError("Mẫu CosyVoice dài quá 30 giây. Cắt mẫu trong Kho giọng và nhập lời của đoạn đã cắt.")
+        prompt = "You are a helpful assistant.<|endofprompt|>" + transcript
+        chunks = self.model.inference_zero_shot(job["text"], prompt, job["ref"], stream=False)
+        with sf.SoundFile(out, "w", self.model.sample_rate, 1, subtype="PCM_16") as audio:
+            for chunk in chunks:
+                audio.write(chunk["tts_speech"].detach().cpu().reshape(-1).numpy())
+
+
 class Chatter:
     def __init__(self):
         import inspect
@@ -198,7 +229,7 @@ class Vieneu:
         self.model.save(audio, str(out))
 
 
-ENGINES = {"omnivoice": Omni, "chatterbox": Chatter, "vieneu": Vieneu}
+ENGINES = {"cosyvoice": Cosy, "omnivoice": Omni, "chatterbox": Chatter, "vieneu": Vieneu}
 
 
 def main() -> None:

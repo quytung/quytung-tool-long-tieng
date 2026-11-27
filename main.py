@@ -30,6 +30,7 @@ ENGINES = {
     "omni_local": ("OmniVoice Local", "Nhân giọng trên máy · Ưu tiên NVIDIA"),
     "chatterbox": ("Chatterbox Multilingual", "Nhân giọng trên máy · Chọn mã ngôn ngữ"),
     "vieneu": ("VieNeu-TTS", "Giọng tiếng Việt · Chạy trên CPU"),
+    "cosyvoice": ("CosyVoice 3 Local", "Nhân giọng bằng đoạn mẫu và lời thoại tương ứng"),
     "edge": ("Microsoft Edge TTS", "Giọng dựng sẵn · Cần Internet"),
 }
 STYLES = {
@@ -159,7 +160,7 @@ class App(W.QWidget):
         self.engines = W.QComboBox()
         self.engines.setSizeAdjustPolicy(W.QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
         self.engines.setMinimumContentsLength(8)
-        self.engines.addItems(["OmniVoice VPS", "OmniVoice Local", "Chatterbox", "VieNeu-TTS", "Edge TTS"])
+        self.engines.addItems([label for label, _ in ENGINES.values()])
         engine_row.addWidget(self.engines, 1)
         self.install = self.button("Cài", self.install_engine)
         engine_row.addWidget(self.install)
@@ -226,6 +227,11 @@ class App(W.QWidget):
             self.device.addItem(label, value)
         self.device.setCurrentIndex(max(0, self.device.findData(self.settings.get("device", "auto"))))
         controls.addWidget(self.device)
+        self.transcripts = self.settings.get("transcripts", {})
+        self.transcript_label = self.label(controls, "Lời thoại trong giọng mẫu")
+        self.transcript = W.QLineEdit(self.transcripts.get(self.sample.text(), ""))
+        self.transcript.setPlaceholderText("Nhập đúng lời của toàn bộ đoạn mẫu (tối đa 30 giây)")
+        controls.addWidget(self.transcript)
         self.edge = W.QComboBox()
         self.edge.setEditable(True)
         self.edge.addItems(["vi-VN-HoaiMyNeural", "vi-VN-NamMinhNeural", "en-US-AriaNeural", "en-US-GuyNeural"])
@@ -379,10 +385,11 @@ class App(W.QWidget):
         for widget, visible in ((self.url, vps), (self.url_label, vps), (self.sample_row, not edge),
                                 (self.sample_label, not edge), (self.edge, edge), (self.edge_label, edge),
                                 (self.style, vps), (self.style_label, vps), (self.instruct, vps),
-                                (self.continuous, engine == "omni_local"), (self.save_raw, engine == "omni_local"), (self.device, engine == "omni_local"), (self.device_label, engine == "omni_local"),
+                                (self.continuous, engine == "omni_local"), (self.transcript_label, engine == "cosyvoice"), (self.transcript, engine == "cosyvoice"),
+                                (self.save_raw, engine == "omni_local"), (self.device, engine == "omni_local"), (self.device_label, engine == "omni_local"),
                                 (self.lang, engine == "chatterbox"), (self.lang_label, engine == "chatterbox")):
             widget.setVisible(visible)
-        for widget, visible in ((self.cut, not edge), (self.workers, vps or edge), (self.timeout, vps or edge)):
+        for widget, visible in ((self.cut, not edge and engine != "cosyvoice"), (self.workers, vps or edge), (self.timeout, vps or edge)):
             widget.setVisible(visible)
             self.advanced.labelForField(widget).setVisible(visible)
 
@@ -414,14 +421,17 @@ class App(W.QWidget):
         dialog = LibraryDialog(self)
         dialog.exec()
         if dialog.selected:
+            self.transcripts[self.sample.text()] = self.transcript.text().strip()
             self.sample.setText(dialog.selected.relative_to(ROOT).as_posix())
+            self.transcript.setText(self.transcripts.get(self.sample.text(), ""))
             try:
                 self.save()
             except OSError as exc:
                 self.set_status(str(exc))
 
     def save(self):
-        data = dict(device=self.device.currentData(), engine=self.engine(), url=self.url.text().strip(), sample=self.sample.text().strip(),
+        self.transcripts[self.sample.text()] = self.transcript.text().strip()
+        data = dict(transcripts=self.transcripts, ref_text=self.transcript.text().strip(), device=self.device.currentData(), engine=self.engine(), url=self.url.text().strip(), sample=self.sample.text().strip(),
                     edge=self.edge.currentText().strip(), language=self.lang.text().strip() or "en",
                     style=self.style.currentText(), instruct=self.instruct.text().strip(),
                     speed=self.speed.value(), gap=self.gap.value(), sample_seconds=self.cut.value(),
@@ -461,12 +471,18 @@ class App(W.QWidget):
             if engine == "omni_local" and self.continuous.isChecked() and not timed:
                 combined = list(group_sentences(combined))
             if preview:
-                fallback = "This is a short voice preview." if engine == "chatterbox" and self.lang.text() == "en" else "Xin chào, đây là giọng đọc thử."
+                fallback = "This is a short voice preview." if engine == "cosyvoice" or (engine == "chatterbox" and self.lang.text() == "en") else "Xin chào, đây là giọng đọc thử."
                 combined = combined[:1] or [fallback]
             elif not combined:
                 raise ValueError("Nhập văn bản cần đọc.")
             data = self.save()
             data["instruct"] = " ".join(filter(None, (STYLES[data["style"]], data["instruct"])))
+            if engine == "cosyvoice":
+                if not data["ref_text"]:
+                    raise ValueError("Nhập lời thoại đúng với đoạn giọng mẫu CosyVoice.")
+                data["sample_seconds"] = 0
+            else:
+                data["ref_text"] = ""
             options = Options(**{key: data[key] for key in Options.__dataclass_fields__})
         except (ValueError, OSError, RuntimeError) as exc:
             self.report_error(str(exc))

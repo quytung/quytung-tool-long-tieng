@@ -27,16 +27,18 @@ WORKER = Path(__file__).resolve().parent / "tts_worker.py"
 
 # mã máy đọc trong Cài đặt → tên môi trường
 ENGINES = {
+    "cosyvoice": "cosyvoice",
     "omni_local": "omnivoice",
     "chatterbox": "chatterbox",
     "vieneu": "vieneu",
 }
 LABELS = {
+    "cosyvoice": "CosyVoice 3 Local (nhân giọng)",
     "omni_local": "OmniVoice trên máy này (nhân giọng mẫu, 646 thứ tiếng)",
     "chatterbox": "Chatterbox Multilingual V3 trên máy này (nhân giọng mẫu)",
     "vieneu": "VieNeu-TTS trên máy này (mạnh tiếng Việt, chạy CPU)",
 }
-SIZES = {"omnivoice": "~3–4 GB", "chatterbox": "~4–5 GB", "vieneu": "~1–2 GB"}
+SIZES = {"cosyvoice": "~5,4 GB model + runtime", "omnivoice": "~3–4 GB", "chatterbox": "~4–5 GB", "vieneu": "~1–2 GB"}
 
 CHATTERBOX_PYPI = "chatterbox-tts==0.1.7"
 CHATTERBOX_SRC = "https://github.com/resemble-ai/chatterbox/archive/5de7a54.zip"   # có Multilingual V3
@@ -193,6 +195,43 @@ def _torch_ver(py: Path) -> str:
     return (r.stdout.strip().splitlines() or [""])[-1].split("+")[0]
 
 
+def install_cosy(py, runtime, cuda, log):
+    import tempfile
+    import urllib.request
+    import zipfile
+
+    source = runtime / "source"
+    archives = [
+        ("FunAudioLLM/CosyVoice", "074ca6dc9e80a2f424f1f74b48bdd7d3fea531cc", source),
+        ("shivammehta25/Matcha-TTS", "dd9105b34bf2be2230f4aa1e4769fb586a3c824e",
+         source / "third_party" / "Matcha-TTS"),
+    ]
+    for repo, revision, target in archives:
+        log(f"Tải mã nguồn {repo}…")
+        with tempfile.TemporaryDirectory(dir=runtime) as tmp:
+            archive = Path(tmp) / "source.zip"
+            with urllib.request.urlopen(f"https://codeload.github.com/{repo}/zip/{revision}", timeout=120) as body:
+                with archive.open("wb") as out:
+                    shutil.copyfileobj(body, out)
+            with zipfile.ZipFile(archive) as bundle:
+                bundle.extractall(tmp)
+            shutil.copytree(next(p for p in Path(tmp).iterdir() if p.is_dir()), target, dirs_exist_ok=True)
+
+    tag = _cuda_index(cuda, ("cu128", "cu126", "cu118")) or "cpu"
+    _pip(py, ["torch==2.7.1", "torchaudio==2.7.1", "--index-url",
+              f"https://download.pytorch.org/whl/{tag}"], log)
+    packages = ("conformer gdown hydra-core HyperPyYAML inflect librosa lightning "
+                "matplotlib modelscope networkx numpy omegaconf onnx pyarrow pydantic rich "
+                "soundfile transformers x-transformers wget").lower().split()
+    deps = [line.strip() for line in (source / "requirements.txt").read_text().splitlines()
+            if line.partition("==")[0].lower() in packages]
+    _pip(py, ["numpy==1.26.4", "Cython", "wheel", "setuptools<81"], log)
+    _pip(py, ["--no-build-isolation", "pyworld==0.3.5"], log)
+    _pip(py, [*deps, "diffusers==0.32.2", "onnxruntime==1.18.0", "openai-whisper==20250625",
+              "huggingface-hub>=0.30,<1"], log)
+    return _gpu_ok(py) if tag != "cpu" else "CPU"
+
+
 def install(engine: str, log=print, sample: Path | None = None) -> str:
     """Cài 1 máy đọc từ đầu tới lúc đọc thử được 1 câu. Trả về dòng tóm tắt."""
     name = ENGINES[engine]
@@ -204,7 +243,18 @@ def install(engine: str, log=print, sample: Path | None = None) -> str:
     log(f"[1/4] Dò máy: {'card ' + card + f' (CUDA {cuda[0]}.{cuda[1]})' if card else 'không có card NVIDIA → chạy CPU'}")
     base = find_python(log)
     log(f"[1/4] Dựng môi trường riêng: runtime/{name} (Python: {base})")
-    _run([base, "-m", "venv", "--clear", str(d)], log)
+    if name == "cosyvoice" and subprocess.run(
+            [base, "-c", "import sys; sys.exit(sys.version_info[:2] != (3, 11))"],
+            creationflags=_NOWIN).returncode:
+        # The desktop BAT can install Python 3.13; keep the inference runtime on 3.11.
+        import tempfile
+        with tempfile.TemporaryDirectory(dir=d.parent) as tmp:
+            _run([base, "-m", "venv", tmp], log)
+            boot = Path(tmp) / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+            _pip(boot, ["uv"], log)
+            _run([str(boot), "-m", "uv", "venv", "--python", "3.11", "--seed", str(d)], log)
+    else:
+        _run([base, "-m", "venv", "--clear", str(d)], log)
     py = env_python(engine)
     if not py.is_file():
         raise InstallError(f"Không dựng được môi trường Python ở {d}.")
@@ -228,6 +278,8 @@ def install(engine: str, log=print, sample: Path | None = None) -> str:
             _pip(py, ["git+https://github.com/k2-fsa/OmniVoice.git", "soundfile"], log)
         if tag:
             gpu_note = _gpu_ok(py)
+    elif name == "cosyvoice":
+        gpu_note = install_cosy(py, d, cuda, log)
     elif name == "chatterbox":
         log("[2/4] Ghim setuptools 80.9 (Perth còn cần pkg_resources)…")
         _pip(py, ["setuptools==80.9.0"], log)
@@ -277,7 +329,11 @@ def install(engine: str, log=print, sample: Path | None = None) -> str:
     stop(engine)
     test = d / "doc_thu.wav"
     text = "Xin chào, đây là giọng đọc thử." if engine == "vieneu" else "This is a short test of the local voice."
-    secs = synth(engine, text, sample, test, log=log, lang="en")
+    reference_text = ""
+    if name == "cosyvoice":
+        sample = d / "source" / "asset" / "zero_shot_prompt.wav"
+        reference_text = "希望你以后能够做的比我还好呦。"
+    secs = synth(engine, text, sample, test, log=log, lang="en", ref_text=reference_text)
     summary = f"{gpu_note} · câu thử {secs:.1f}s"
     (d / ".ok").write_text(summary, encoding="utf-8")
     log(f"✔ Cài xong {LABELS[engine].split(' (')[0]}: {summary}")
@@ -392,9 +448,9 @@ atexit.register(stop)
 
 
 def synth(engine: str, text: str, sample: Path | None, out: Path, log=print, lang: str = "en",
-          steps: int = 32, device: str = "auto") -> float:
+          steps: int = 32, device: str = "auto", ref_text: str = "") -> float:
     """Đọc 1 câu ra file WAV. Trả về số giây máy đọc mất."""
-    job = {"text": text, "ref": str(sample) if sample else "", "out": str(out), "lang": lang, "steps": steps}
+    job = {"text": text, "ref": str(sample) if sample else "", "out": str(out), "lang": lang, "steps": steps, "ref_text": ref_text}
     for attempt in (1, 2):
         w = _get(engine, log, device)
         msg = w.say(job, log)

@@ -14,6 +14,20 @@ model cài riêng trên máy.
 - Sau lần clone đầu tiên, dùng Ctrl+T trong cửa sổ project để lấy cập nhật.
   Chạy lại BAT nếu danh sách thư viện thay đổi.
 
+## CosyVoice 3 Local
+
+Chọn **CosyVoice 3 Local → Cài**. Lần đầu cần Internet để tải mã nguồn, runtime
+Python 3.11 và khoảng 5,4 GB trọng số. Dành khoảng 15 GB trống. Nếu pip báo thiếu
+trình biên dịch khi dựng PyWORLD trên Windows, cài Microsoft C++ Build Tools
+với thành phần Desktop development with C++, rồi bấm Cài lại.
+Bộ cài dùng mẫu có sẵn của dự án CosyVoice để kiểm tra sinh WAV trước khi báo đã cài.
+
+Trong **Kho giọng**, chọn đoạn thu rõ, dài tối đa 30 giây. Nhập đúng toàn bộ
+lời trong đoạn thu vào ô **Lời thoại trong giọng mẫu**. Tool nhớ lời theo file
+mẫu và lưu một bản của lời này vào từng bài trong hàng đợi. Với CosyVoice,
+toàn bộ đoạn mẫu được dùng để khớp với lời đã nhập. Dán kịch bản tiếng Anh rồi
+bấm nghe thử hoặc xuất như các máy đọc khác.
+
 ## Máy đọc
 
 | Máy | Cần gì |
