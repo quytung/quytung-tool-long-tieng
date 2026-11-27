@@ -167,8 +167,7 @@ class Pocket:
         self.model = TTSModel.load_model(language="english")
         if not self.model.has_voice_cloning:
             raise RuntimeError("PocketTTS chưa tải được model nhân giọng. Chấp nhận điều khoản tại "
-                               "https://huggingface.co/kyutai/pocket-tts, đặt biến môi trường HF_TOKEN "
-                               "của tài khoản có quyền đọc model rồi mở lại tool.")
+                               "https://huggingface.co/kyutai/pocket-tts rồi bấm Thiết lập PocketTTS.")
         self.reference = None
         self.state = None
         note("PocketTTS chạy trên CPU (cpu).")
@@ -294,5 +293,41 @@ def main() -> None:
             say(ok=False, error=f"{type(ex).__name__}: {str(ex)[:300]}", trace=traceback.format_exc()[-1200:])
 
 
+def pocket_access():
+    from huggingface_hub import get_hf_file_metadata, get_token, hf_hub_url
+    from huggingface_hub._login import _save_oauth_token
+    from huggingface_hub.utils._oauth_device import request_device_code, poll_device_token
+
+    url = hf_hub_url("kyutai/pocket-tts", "languages/english_2026-10/model.safetensors",
+                     revision="db04f0e653473e5c7333c69686ac92b7460b0c1d")
+    try:
+        token = get_token()
+        if token:
+            try:
+                get_hf_file_metadata(url, token=token, timeout=15)
+                return 0
+            except Exception as exc:
+                if getattr(getattr(exc, "response", None), "status_code", None) not in (401, 403):
+                    raise
+                if os.environ.get("HF_TOKEN"):
+                    say(error="HF_TOKEN hiện tại thiếu quyền. Cấp quyền đọc model hoặc bỏ biến cũ rồi mở lại tool.")
+                    return 1
+        info = request_device_code()
+        say(url=info["verification_uri_complete"], code=info["user_code"])
+        response = poll_device_token(info)
+        get_hf_file_metadata(url, token=response["access_token"], timeout=15)
+        _save_oauth_token(response)
+        return 0
+    except Exception as exc:
+        status = getattr(getattr(exc, "response", None), "status_code", None)
+        if status in (401, 403):
+            say(error="Tài khoản chưa được tải model nhân giọng. Mở trang PocketTTS, chấp nhận điều khoản bằng cùng tài khoản rồi thử lại.")
+        else:
+            say(error="Đăng nhập hoặc kiểm tra quyền chưa hoàn tất. Kiểm tra mạng và thử lại nếu mã hết hạn hoặc bị từ chối.")
+        return 1
+
+
 if __name__ == "__main__":
+    if sys.argv[1:] == ["--pocket-access"]:
+        sys.exit(pocket_access())
     main()

@@ -108,6 +108,7 @@ class Signals(C.QObject):
     success = C.Signal(object)
     failure = C.Signal(str)
     update_result = C.Signal(str, object)
+    authorize_pocket = C.Signal(str, str)
     hardware = C.Signal(str, str)
 
 
@@ -136,6 +137,7 @@ class App(W.QWidget):
         self.signals.success.connect(self.finished)
         self.signals.failure.connect(self.failed)
         self.signals.update_result.connect(self.update_finished)
+        self.signals.authorize_pocket.connect(self.open_pocket_login)
         self.signals.hardware.connect(self.hardware_result)
 
         page = W.QVBoxLayout(self)
@@ -381,6 +383,7 @@ class App(W.QWidget):
         local = local_tts.is_local(engine)
         self.engines.setToolTip(ENGINES[engine][1] + ("\n" + local_tts.status(engine) if local else ""))
         self.refresh_hardware()
+        self.install.setText("Thiết lập PocketTTS" if engine == "pocket" else "Cài")
         self.install.setVisible(local)
         self.install.setToolTip("Cài lại máy đọc" if local and local_tts.is_installed(engine) else "Cài máy đọc")
         for widget, visible in ((self.url, vps), (self.url_label, vps), (self.sample_row, not edge),
@@ -653,8 +656,34 @@ class App(W.QWidget):
 
         threading.Thread(target=work, daemon=True).start()
 
+    def open_pocket_login(self, url, code):
+        self.set_status(f"Đăng nhập Hugging Face · Mã xác nhận: {code}")
+        link = C.QUrl(url)
+        if link.scheme() == "https" and link.host() == "huggingface.co":
+            if not G.QDesktopServices.openUrl(link):
+                W.QMessageBox.information(self, "Đăng nhập Hugging Face",
+                                          f"Mở {url} trong trình duyệt. Mã xác nhận: {code}")
+
     def install_engine(self):
         engine = self.engine()
+        if engine == "pocket":
+            dialog = W.QDialog(self)
+            dialog.setWindowTitle("Thiết lập PocketTTS")
+            layout = W.QVBoxLayout(dialog)
+            guide = W.QLabel(
+                '1. <a href="https://huggingface.co/kyutai/pocket-tts">Mở trang PocketTTS</a>, '
+                'đăng nhập và chấp nhận điều khoản nhân giọng.<br><br>'
+                '2. Bấm Tiếp tục. Nếu trình duyệt yêu cầu, xác nhận cho phép tool truy cập.<br>'
+                'Tool sẽ kiểm tra quyền rồi tự cài máy đọc.')
+            guide.setOpenExternalLinks(True)
+            layout.addWidget(guide)
+            actions = W.QDialogButtonBox(W.QDialogButtonBox.StandardButton.Cancel)
+            actions.addButton("Tiếp tục", W.QDialogButtonBox.ButtonRole.AcceptRole)
+            actions.accepted.connect(dialog.accept)
+            actions.rejected.connect(dialog.reject)
+            layout.addWidget(actions)
+            if not dialog.exec():
+                return
         self.devices.pop(engine, None)
         self.reading_engine = engine
         self.refresh_hardware()
@@ -665,6 +694,8 @@ class App(W.QWidget):
 
         def work():
             try:
+                if engine == "pocket":
+                    local_tts.prepare_pocket_access(self.signals.log.emit, self.signals.authorize_pocket.emit)
                 summary = local_tts.install(engine, log=self.signals.log.emit)
             except Exception as exc:
                 self.signals.failure.emit(str(exc))

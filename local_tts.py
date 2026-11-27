@@ -197,6 +197,38 @@ def _torch_ver(py: Path) -> str:
     return (r.stdout.strip().splitlines() or [""])[-1].split("+")[0]
 
 
+def pocket_env():
+    env = _env()
+    # Credentials belong to the Windows user. Only the weights travel with the tool.
+    env["HF_HOME"] = os.environ.get("HF_HOME") or str(Path.home() / ".cache" / "huggingface")
+    return env
+
+
+def prepare_pocket_access(log, authorize):
+    helper = RUNTIME / "pocket-auth"
+    py = helper / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    if not py.is_file():
+        _run([sys.executable, "-m", "venv", str(helper)], log)
+    marker = helper / ".hub-1.20.1"
+    if not marker.exists():
+        log("Chuẩn bị đăng nhập Hugging Face…")
+        _pip(py, ["huggingface_hub==1.20.1"], log)
+        marker.touch()
+    with subprocess.Popen([str(py), str(WORKER), "--pocket-access"], env=pocket_env(),
+                          stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
+                          encoding="utf-8", creationflags=_NOWIN) as process:
+        error = "Không kiểm tra được quyền PocketTTS. Kiểm tra kết nối rồi thử lại."
+        for line in process.stdout:
+            if line.startswith("LDR "):
+                event = json.loads(line[4:])
+                if "url" in event:
+                    authorize(event["url"], event["code"])
+                elif "error" in event:
+                    error = event["error"]
+        if process.wait():
+            raise InstallError(error)
+
+
 def install_cosy(py, runtime, cuda, log):
     import tempfile
     import urllib.request
@@ -359,7 +391,7 @@ class _Worker:
             raise RuntimeError(f"Chưa cài máy đọc «{LABELS[engine]}». Vào Cài đặt › Giọng đọc, bấm «Cài máy đọc».")
         self.p = subprocess.Popen([str(py), str(WORKER), ENGINES[engine], device], stdin=subprocess.PIPE,
                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8",
-                                  errors="replace", env=_env(), bufsize=1, creationflags=_NOWIN)
+                                  errors="replace", env=pocket_env() if engine == "pocket" else _env(), bufsize=1, creationflags=_NOWIN)
         self.err: list[str] = []
         threading.Thread(target=self._read, daemon=True).start()
         threading.Thread(target=self._read_err, daemon=True).start()

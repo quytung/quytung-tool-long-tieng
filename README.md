@@ -28,10 +28,9 @@ Nếu biết lời, có thể nhập chính xác nội dung đoạn mẫu. Tool 
 
 ## PocketTTS Local
 
-Máy đọc tiếng Anh dùng CPU. Để nhân giọng từ LD, dùng tài khoản Hugging Face
-đã chấp nhận điều khoản tại https://huggingface.co/kyutai/pocket-tts và có quyền
-đọc model. Đặt biến môi trường người dùng Windows **HF_TOKEN** bằng token có
-quyền đọc model đó, rồi mở lại PyCharm hoặc tool. Chọn **PocketTTS Local → Cài**.
+Chọn **PocketTTS Local → Thiết lập PocketTTS**. Mở trang model từ cửa sổ thiết lập,
+đăng nhập Hugging Face và chấp nhận điều khoản nhân giọng. Bấm **Tiếp tục**,
+xác nhận trong trình duyệt nếu được hỏi. Tool kiểm tra quyền tải model trước khi cài.
 Sau khi cài, chọn mẫu trong **Kho giọng**, dán tiếng Anh rồi bấm chạy.
 PocketTTS không cần lời thoại mẫu.
 
