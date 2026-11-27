@@ -22,11 +22,18 @@ trình biên dịch khi dựng PyWORLD trên Windows, cài Microsoft C++ Build T
 với thành phần Desktop development with C++, rồi bấm Cài lại.
 Bộ cài dùng mẫu có sẵn của dự án CosyVoice để kiểm tra sinh WAV trước khi báo đã cài.
 
-Trong **Kho giọng**, chọn đoạn thu rõ, dài tối đa 30 giây. Nhập đúng toàn bộ
-lời trong đoạn thu vào ô **Lời thoại trong giọng mẫu**. Tool nhớ lời theo file
-mẫu và lưu một bản của lời này vào từng bài trong hàng đợi. Với CosyVoice,
-toàn bộ đoạn mẫu được dùng để khớp với lời đã nhập. Dán kịch bản tiếng Anh rồi
-bấm nghe thử hoặc xuất như các máy đọc khác.
+Chọn mẫu tối đa 30 giây trong **Kho giọng**, kể cả giọng chép từ LD.
+Để trống **Lời thoại trong giọng mẫu** để đọc trực tiếp theo file giọng.
+Nếu biết lời, có thể nhập chính xác nội dung đoạn mẫu. Tool nhớ lời theo giọng.
+
+## PocketTTS Local
+
+Máy đọc tiếng Anh dùng CPU. Để nhân giọng từ LD, dùng tài khoản Hugging Face
+đã chấp nhận điều khoản tại https://huggingface.co/kyutai/pocket-tts và có quyền
+đọc model. Đặt biến môi trường người dùng Windows **HF_TOKEN** bằng token có
+quyền đọc model đó, rồi mở lại PyCharm hoặc tool. Chọn **PocketTTS Local → Cài**.
+Sau khi cài, chọn mẫu trong **Kho giọng**, dán tiếng Anh rồi bấm chạy.
+PocketTTS không cần lời thoại mẫu.
 
 ## Máy đọc
 

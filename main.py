@@ -30,7 +30,8 @@ ENGINES = {
     "omni_local": ("OmniVoice Local", "Nhân giọng trên máy · Ưu tiên NVIDIA"),
     "chatterbox": ("Chatterbox Multilingual", "Nhân giọng trên máy · Chọn mã ngôn ngữ"),
     "vieneu": ("VieNeu-TTS", "Giọng tiếng Việt · Chạy trên CPU"),
-    "cosyvoice": ("CosyVoice 3 Local", "Nhân giọng bằng đoạn mẫu và lời thoại tương ứng"),
+    "pocket": ("PocketTTS Local", "Tiếng Anh · Nhân giọng từ mẫu · CPU"),
+    "cosyvoice": ("CosyVoice 3 Local", "Nhân giọng từ mẫu · Lời thoại mẫu tùy chọn"),
     "edge": ("Microsoft Edge TTS", "Giọng dựng sẵn · Cần Internet"),
 }
 STYLES = {
@@ -228,9 +229,9 @@ class App(W.QWidget):
         self.device.setCurrentIndex(max(0, self.device.findData(self.settings.get("device", "auto"))))
         controls.addWidget(self.device)
         self.transcripts = self.settings.get("transcripts", {})
-        self.transcript_label = self.label(controls, "Lời thoại trong giọng mẫu")
+        self.transcript_label = self.label(controls, "Lời thoại trong giọng mẫu (tùy chọn)")
         self.transcript = W.QLineEdit(self.transcripts.get(self.sample.text(), ""))
-        self.transcript.setPlaceholderText("Nhập đúng lời của toàn bộ đoạn mẫu (tối đa 30 giây)")
+        self.transcript.setPlaceholderText("Có thể để trống nếu chưa biết lời mẫu")
         controls.addWidget(self.transcript)
         self.edge = W.QComboBox()
         self.edge.setEditable(True)
@@ -471,15 +472,13 @@ class App(W.QWidget):
             if engine == "omni_local" and self.continuous.isChecked() and not timed:
                 combined = list(group_sentences(combined))
             if preview:
-                fallback = "This is a short voice preview." if engine == "cosyvoice" or (engine == "chatterbox" and self.lang.text() == "en") else "Xin chào, đây là giọng đọc thử."
+                fallback = "This is a short voice preview." if engine in ("cosyvoice", "pocket") or (engine == "chatterbox" and self.lang.text() == "en") else "Xin chào, đây là giọng đọc thử."
                 combined = combined[:1] or [fallback]
             elif not combined:
                 raise ValueError("Nhập văn bản cần đọc.")
             data = self.save()
             data["instruct"] = " ".join(filter(None, (STYLES[data["style"]], data["instruct"])))
             if engine == "cosyvoice":
-                if not data["ref_text"]:
-                    raise ValueError("Nhập lời thoại đúng với đoạn giọng mẫu CosyVoice.")
                 data["sample_seconds"] = 0
             else:
                 data["ref_text"] = ""
@@ -773,7 +772,7 @@ class App(W.QWidget):
 
     def refresh_hardware(self):
         engine = self.reading_engine or self.engine()
-        device = {"vps": "VPS", "edge": "Qua mạng", "vieneu": "CPU"}.get(engine)
+        device = {"vps": "VPS", "edge": "Qua mạng", "vieneu": "CPU", "pocket": "CPU"}.get(engine)
         if device is None:
             device = self.devices.get(engine, "Chưa xác nhận")
         self.hardware.setText(f"{self.gpu_status}  |  Máy đọc: {device}")

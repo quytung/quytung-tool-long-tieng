@@ -146,16 +146,41 @@ class Cosy:
 
     def say(self, job, out):
         import soundfile as sf
-        transcript = job["ref_text"].strip()
-        if not transcript or not job["ref"]:
-            raise ValueError("CosyVoice cần giọng mẫu và lời thoại tương ứng.")
+        transcript = job.get("ref_text", "").strip()
+        if not job["ref"]:
+            raise ValueError("Chọn giọng mẫu cho CosyVoice.")
         if sf.info(job["ref"]).duration > 30:
-            raise ValueError("Mẫu CosyVoice dài quá 30 giây. Cắt mẫu trong Kho giọng và nhập lời của đoạn đã cắt.")
-        prompt = "You are a helpful assistant.<|endofprompt|>" + transcript
-        chunks = self.model.inference_zero_shot(job["text"], prompt, job["ref"], stream=False)
+            raise ValueError("Mẫu CosyVoice dài quá 30 giây. Cắt đoạn ngắn hơn trong Kho giọng.")
+        prefix = "You are a helpful assistant.<|endofprompt|>"
+        if transcript:
+            chunks = self.model.inference_zero_shot(job["text"], prefix + transcript, job["ref"], stream=False)
+        else:
+            chunks = self.model.inference_cross_lingual(prefix + job["text"], job["ref"], stream=False)
         with sf.SoundFile(out, "w", self.model.sample_rate, 1, subtype="PCM_16") as audio:
             for chunk in chunks:
                 audio.write(chunk["tts_speech"].detach().cpu().reshape(-1).numpy())
+
+
+class Pocket:
+    def __init__(self):
+        from pocket_tts import TTSModel
+        self.model = TTSModel.load_model(language="english")
+        if not self.model.has_voice_cloning:
+            raise RuntimeError("PocketTTS chưa tải được model nhân giọng. Chấp nhận điều khoản tại "
+                               "https://huggingface.co/kyutai/pocket-tts, đặt biến môi trường HF_TOKEN "
+                               "của tài khoản có quyền đọc model rồi mở lại tool.")
+        self.reference = None
+        self.state = None
+        note("PocketTTS chạy trên CPU (cpu).")
+
+    def say(self, job, out):
+        import soundfile as sf
+        reference = job["ref"] or "alba"  # Nút Cài đọc thử bằng giọng dựng sẵn.
+        if reference != self.reference:
+            self.state = self.model.get_state_for_audio_prompt(reference)
+            self.reference = reference
+        audio = self.model.generate_audio(self.state, job["text"])
+        sf.write(out, audio.detach().cpu().reshape(-1).numpy(), self.model.sample_rate, subtype="PCM_16")
 
 
 class Chatter:
@@ -229,7 +254,7 @@ class Vieneu:
         self.model.save(audio, str(out))
 
 
-ENGINES = {"cosyvoice": Cosy, "omnivoice": Omni, "chatterbox": Chatter, "vieneu": Vieneu}
+ENGINES = {"pocket": Pocket, "cosyvoice": Cosy, "omnivoice": Omni, "chatterbox": Chatter, "vieneu": Vieneu}
 
 
 def main() -> None:

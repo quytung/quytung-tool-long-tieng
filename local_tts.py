@@ -27,18 +27,20 @@ WORKER = Path(__file__).resolve().parent / "tts_worker.py"
 
 # mã máy đọc trong Cài đặt → tên môi trường
 ENGINES = {
+    "pocket": "pocket",
     "cosyvoice": "cosyvoice",
     "omni_local": "omnivoice",
     "chatterbox": "chatterbox",
     "vieneu": "vieneu",
 }
 LABELS = {
+    "pocket": "PocketTTS Local (tiếng Anh, CPU)",
     "cosyvoice": "CosyVoice 3 Local (nhân giọng)",
     "omni_local": "OmniVoice trên máy này (nhân giọng mẫu, 646 thứ tiếng)",
     "chatterbox": "Chatterbox Multilingual V3 trên máy này (nhân giọng mẫu)",
     "vieneu": "VieNeu-TTS trên máy này (mạnh tiếng Việt, chạy CPU)",
 }
-SIZES = {"cosyvoice": "~5,4 GB model + runtime", "omnivoice": "~3–4 GB", "chatterbox": "~4–5 GB", "vieneu": "~1–2 GB"}
+SIZES = {"pocket": "model tiếng Anh + Torch CPU", "cosyvoice": "~5,4 GB model + runtime", "omnivoice": "~3–4 GB", "chatterbox": "~4–5 GB", "vieneu": "~1–2 GB"}
 
 CHATTERBOX_PYPI = "chatterbox-tts==0.1.7"
 CHATTERBOX_SRC = "https://github.com/resemble-ai/chatterbox/archive/5de7a54.zip"   # có Multilingual V3
@@ -243,7 +245,7 @@ def install(engine: str, log=print, sample: Path | None = None) -> str:
     log(f"[1/4] Dò máy: {'card ' + card + f' (CUDA {cuda[0]}.{cuda[1]})' if card else 'không có card NVIDIA → chạy CPU'}")
     base = find_python(log)
     log(f"[1/4] Dựng môi trường riêng: runtime/{name} (Python: {base})")
-    if name == "cosyvoice" and subprocess.run(
+    if name in ("cosyvoice", "pocket") and subprocess.run(
             [base, "-c", "import sys; sys.exit(sys.version_info[:2] != (3, 11))"],
             creationflags=_NOWIN).returncode:
         # The desktop BAT can install Python 3.13; keep the inference runtime on 3.11.
@@ -278,6 +280,11 @@ def install(engine: str, log=print, sample: Path | None = None) -> str:
             _pip(py, ["git+https://github.com/k2-fsa/OmniVoice.git", "soundfile"], log)
         if tag:
             gpu_note = _gpu_ok(py)
+    elif name == "pocket":
+        log("[2/4] Cài PyTorch CPU và PocketTTS tiếng Anh…")
+        _pip(py, ["torch>=2.5", "--index-url", "https://download.pytorch.org/whl/cpu"], log)
+        _pip(py, ["https://github.com/kyutai-labs/pocket-tts/archive/"
+                  "9c26eb08dcdc4b2bcec88036f0e97f55db676610.zip", "soundfile"], log)
     elif name == "cosyvoice":
         gpu_note = install_cosy(py, d, cuda, log)
     elif name == "chatterbox":
@@ -321,7 +328,7 @@ def install(engine: str, log=print, sample: Path | None = None) -> str:
     if "CUDA_OK" in gpu_note:
         log("  ✔ Chạy bằng card: " + gpu_note.replace("CUDA_OK", "").strip())
         gpu_note = "card " + (card or "NVIDIA")
-    elif card and name != "vieneu":
+    elif card and name not in ("vieneu", "pocket"):
         log("  ⚠ Chưa chạy được bằng card (" + gpu_note[:150] + "). Vẫn đọc được bằng CPU, chậm hơn.")
         gpu_note = "CPU"
 
